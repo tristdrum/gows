@@ -133,32 +133,7 @@ func (s *Server) SetChatArchive(ctx context.Context, req *__.ChatArchiveRequest)
 		return nil, err
 	}
 
-	var lastMessageKey *waCommon.MessageKey
-	var lastMessageTimestamp time.Time
-	messages, err := cli.Storage.Messages.GetChatMessages(
-		jid,
-		storage.MessageFilter{},
-		storage.Pagination{Limit: 1, Offset: 0},
-		true,
-	)
-	if err != nil {
-		cli.Log.Warnf("SetChatArchive: failed to fetch last message for %s: %v", jid, err)
-	} else if len(messages) == 0 || messages[0] == nil {
-		cli.Log.Debugf("SetChatArchive: no messages found for %s", jid)
-	} else {
-		m := messages[0]
-		fromMe := m.Info.IsFromMe
-		lastMessageKey = &waCommon.MessageKey{
-			RemoteJID: proto.String(jid.String()),
-			FromMe:    proto.Bool(fromMe),
-			ID:        proto.String(m.Info.ID),
-		}
-		if m.Info.IsGroup {
-			participant := m.Info.Sender.ToNonAD().String()
-			lastMessageKey.Participant = proto.String(participant)
-		}
-		lastMessageTimestamp = m.Info.Timestamp
-	}
+	lastMessageKey, lastMessageTimestamp := lastMessageForChatAppState(cli, jid, "SetChatArchive")
 
 	buildPatch := func() appstate.PatchInfo {
 		return gows.BuildChatArchive(
@@ -178,4 +153,67 @@ func (s *Server) SetChatArchive(ctx context.Context, req *__.ChatArchiveRequest)
 		return nil, err
 	}
 	return &__.Empty{}, nil
+}
+
+// ClearChat clears local chat history via regular_high app state patch.
+func (s *Server) ClearChat(ctx context.Context, req *__.ClearChatRequest) (*__.Empty, error) {
+	cli, err := s.Sm.Get(req.GetSession().GetId())
+	if err != nil {
+		return nil, err
+	}
+	jid, err := types.ParseJID(req.GetJid())
+	if err != nil {
+		return nil, err
+	}
+
+	lastMessageKey, lastMessageTimestamp := lastMessageForChatAppState(cli, jid, "ClearChat")
+	buildPatch := func() appstate.PatchInfo {
+		return gows.BuildChatClear(
+			jid,
+			lastMessageKey,
+			lastMessageTimestamp,
+		)
+	}
+	if err = gows.SendChatClearAppState(
+		ctx,
+		cli,
+		buildPatch,
+		gows.DefaultChatClearAppStateAttempts,
+		gows.DefaultChatClearAppStateDelay,
+	); err != nil {
+		return nil, err
+	}
+	return &__.Empty{}, nil
+}
+
+func lastMessageForChatAppState(
+	cli *gows.GoWS,
+	jid types.JID,
+	action string,
+) (*waCommon.MessageKey, time.Time) {
+	messages, err := cli.Storage.Messages.GetChatMessages(
+		jid,
+		storage.MessageFilter{},
+		storage.Pagination{Limit: 1, Offset: 0},
+		true,
+	)
+	if err != nil {
+		cli.Log.Warnf("%s: failed to fetch last message for %s: %v", action, jid, err)
+		return nil, time.Time{}
+	}
+	if len(messages) == 0 || messages[0] == nil {
+		cli.Log.Debugf("%s: no messages found for %s", action, jid)
+		return nil, time.Time{}
+	}
+	m := messages[0]
+	lastMessageKey := &waCommon.MessageKey{
+		RemoteJID: proto.String(jid.String()),
+		FromMe:    proto.Bool(m.Info.IsFromMe),
+		ID:        proto.String(m.Info.ID),
+	}
+	if m.Info.IsGroup {
+		participant := m.Info.Sender.ToNonAD().String()
+		lastMessageKey.Participant = proto.String(participant)
+	}
+	return lastMessageKey, m.Info.Timestamp
 }

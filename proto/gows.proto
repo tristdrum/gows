@@ -119,6 +119,7 @@ service MessageService {
   rpc CheckPhones(CheckPhonesRequest) returns (CheckPhonesResponse);
   rpc MarkChatUnread(ChatUnreadRequest) returns (Empty);
   rpc SetChatArchive(ChatArchiveRequest) returns (Empty);
+  rpc ClearChat(ClearChatRequest) returns (Empty);
 
   //
   // Message
@@ -522,6 +523,11 @@ message ChatArchiveRequest {
   Session session = 1;
   string jid = 2;
   bool archive = 3;
+}
+
+message ClearChatRequest {
+  Session session = 1;
+  string jid = 2;
 }
 
 message PhoneInfo {

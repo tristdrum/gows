@@ -317,3 +317,41 @@ func BuildChatArchive(
 ) appstate.PatchInfo {
 	return appstate.BuildArchive(jid, archive, lastMessageTimestamp, lastMessageKey)
 }
+
+// BuildChatClear builds an app state patch for clearing local chat history.
+func BuildChatClear(
+	jid types.JID,
+	lastMessageKey *waCommon.MessageKey,
+	lastMessageTimestamp time.Time,
+) appstate.PatchInfo {
+	return appstate.PatchInfo{
+		Type: appstate.WAPatchRegularHigh,
+		Mutations: []appstate.MutationInfo{{
+			Index:   []string{appstate.IndexClearChat, jid.String(), "1", "0"},
+			Version: 6,
+			Value: &waSyncAction.SyncActionValue{
+				ClearChatAction: &waSyncAction.ClearChatAction{
+					MessageRange: buildChatActionMessageRange(lastMessageTimestamp, lastMessageKey),
+				},
+			},
+		}},
+	}
+}
+
+func buildChatActionMessageRange(
+	lastMessageTimestamp time.Time,
+	lastMessageKey *waCommon.MessageKey,
+) *waSyncAction.SyncActionMessageRange {
+	if lastMessageTimestamp.IsZero() {
+		lastMessageTimestamp = time.Now()
+	}
+	messageRange := &waSyncAction.SyncActionMessageRange{
+		LastMessageTimestamp: proto.Int64(lastMessageTimestamp.Unix()),
+	}
+	if lastMessageKey != nil {
+		messageRange.Messages = []*waSyncAction.SyncActionMessage{{
+			Key: lastMessageKey,
+		}}
+	}
+	return messageRange
+}

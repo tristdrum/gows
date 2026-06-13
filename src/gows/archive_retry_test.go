@@ -122,12 +122,22 @@ func keyIDHex(keyIDs [][]byte) []string {
 }
 
 func retryableRegularLowKeyConflict(keyID string) error {
+	return retryableAppStateKeyConflict(appstate.WAPatchRegularLow, keyID)
+}
+
+func retryableRegularHighKeyConflict(keyID string) error {
+	return retryableAppStateKeyConflict(appstate.WAPatchRegularHigh, keyID)
+}
+
+func retryableAppStateKeyConflict(patchName appstate.WAPatchName, keyID string) error {
 	return fmt.Errorf(
-		"server returned error updating app state (regular_low): "+
+		"server returned error updating app state (%s): "+
 			"<error code=\"409\" text=\"conflict\"/> "+
 			"(also, applying patches in the response failed: "+
-			"failed to decode app state regular_low patches: "+
+			"failed to decode app state %s patches: "+
 			"failed to get key %s to decode mutation: didn't find app state key)",
+		patchName,
+		patchName,
 		keyID,
 	)
 }
@@ -160,6 +170,35 @@ func TestSendChatArchiveAppStateRetriesRegularLowKeyConflict(t *testing.T) {
 	assert.Equal(t, 2, client.patchBuilds)
 	assert.Equal(t, []string{"00080000C23A"}, keyIDHex(client.requestedKeys))
 	assert.Empty(t, client.recoveryRequests)
+}
+
+func TestSendChatClearAppStateRetriesRegularHighKeyConflict(t *testing.T) {
+	client := &fakeArchiveAppStateClient{
+		sendErrors: []error{
+			retryableRegularHighKeyConflict("00080000C23A"),
+			nil,
+		},
+	}
+
+	err := SendChatClearAppState(
+		context.Background(),
+		client,
+		func() appstate.PatchInfo {
+			client.patchBuilds++
+			return appstate.PatchInfo{Type: appstate.WAPatchRegularHigh}
+		},
+		3,
+		0,
+	)
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, client.sendCalls)
+	assert.Equal(t, 1, client.fetchCalls)
+	assert.Equal(t, appstate.WAPatchRegularHigh, client.lastFetchName)
+	assert.False(t, client.lastFetchFullSync)
+	assert.False(t, client.lastFetchOnlyIfSynced)
+	assert.Equal(t, 2, client.patchBuilds)
+	assert.Equal(t, []string{"00080000C23A"}, keyIDHex(client.requestedKeys))
 }
 
 func TestSendChatArchiveAppStateWaitsForMissingKeyRecoveryBeforeRetry(t *testing.T) {

@@ -17,8 +17,10 @@ import (
 const (
 	DefaultChatArchiveAppStateAttempts = 4
 	DefaultChatArchiveAppStateDelay    = 10 * time.Second
+	DefaultChatClearAppStateAttempts   = 4
+	DefaultChatClearAppStateDelay      = 10 * time.Second
 
-	chatArchiveRegularLowRefreshAttempts = 4
+	chatAppStateRefreshAttempts = 4
 )
 
 var missingAppStateKeyPattern = regexp.MustCompile(`(?i)failed to get key ([0-9a-f]+)`)
@@ -109,6 +111,41 @@ func SendChatArchiveAppState(
 	attempts int,
 	retryDelay time.Duration,
 ) error {
+	return SendChatAppState(
+		ctx,
+		client,
+		buildPatch,
+		appstate.WAPatchRegularLow,
+		attempts,
+		retryDelay,
+	)
+}
+
+func SendChatClearAppState(
+	ctx context.Context,
+	client ChatArchiveAppStateClient,
+	buildPatch func() appstate.PatchInfo,
+	attempts int,
+	retryDelay time.Duration,
+) error {
+	return SendChatAppState(
+		ctx,
+		client,
+		buildPatch,
+		appstate.WAPatchRegularHigh,
+		attempts,
+		retryDelay,
+	)
+}
+
+func SendChatAppState(
+	ctx context.Context,
+	client ChatArchiveAppStateClient,
+	buildPatch func() appstate.PatchInfo,
+	patchName appstate.WAPatchName,
+	attempts int,
+	retryDelay time.Duration,
+) error {
 	if attempts < 1 {
 		attempts = 1
 	}
@@ -116,12 +153,12 @@ func SendChatArchiveAppState(
 	for attempt := 1; attempt <= attempts; attempt++ {
 		if err := client.SendAppState(ctx, buildPatch()); err != nil {
 			lastErr = err
-			if attempt == attempts || !IsRetryableRegularLowAppStateError(err) {
+			if attempt == attempts || !IsRetryableAppStateError(err, patchName) {
 				return err
 			}
-			refreshErr := RecoverRegularLowAppState(ctx, client, err, retryDelay)
+			refreshErr := RecoverChatAppState(ctx, client, patchName, err, retryDelay)
 			if refreshErr != nil {
-				lastErr = fmt.Errorf("%w (also failed to recover regular_low app state before retry: %w)", err, refreshErr)
+				lastErr = fmt.Errorf("%w (also failed to recover %s app state before retry: %w)", err, patchName, refreshErr)
 				return lastErr
 			}
 			continue
@@ -137,55 +174,70 @@ func RecoverRegularLowAppState(
 	cause error,
 	retryDelay time.Duration,
 ) error {
+	return RecoverChatAppState(ctx, client, appstate.WAPatchRegularLow, cause, retryDelay)
+}
+
+func RecoverChatAppState(
+	ctx context.Context,
+	client ChatArchiveAppStateClient,
+	patchName appstate.WAPatchName,
+	cause error,
+	retryDelay time.Duration,
+) error {
 	requestMissingAppStateKeys(ctx, client, cause)
 
 	var lastErr error
 	recoveryRequested := false
-	for attempt := 1; attempt <= chatArchiveRegularLowRefreshAttempts; attempt++ {
+	for attempt := 1; attempt <= chatAppStateRefreshAttempts; attempt++ {
 		if retryDelay > 0 {
-			if waitErr := waitForChatArchiveAppStateRecovery(ctx, client, retryDelay); waitErr != nil {
+			if waitErr := waitForChatAppStateRecovery(ctx, client, patchName, retryDelay); waitErr != nil {
 				return waitErr
 			}
 		}
 
-		refreshErr := client.FetchAppState(ctx, appstate.WAPatchRegularLow, false, false)
+		refreshErr := client.FetchAppState(ctx, patchName, false, false)
 		if refreshErr == nil {
 			return nil
 		}
 		lastErr = refreshErr
 		requestMissingAppStateKeys(ctx, client, refreshErr)
-		if !IsRetryableRegularLowAppStateError(refreshErr) {
+		if !IsRetryableAppStateError(refreshErr, patchName) {
 			return refreshErr
 		}
 		if !recoveryRequested {
 			recoveryRequested = true
-			if recoveryErr := requestRegularLowAppStateRecovery(ctx, client); recoveryErr != nil {
-				lastErr = fmt.Errorf("%w (also failed to request regular_low app state recovery: %v)", refreshErr, recoveryErr)
+			if recoveryErr := requestChatAppStateRecovery(ctx, client, patchName); recoveryErr != nil {
+				lastErr = fmt.Errorf("%w (also failed to request %s app state recovery: %v)", refreshErr, patchName, recoveryErr)
 			}
 		}
 	}
 
-	fullSyncErr := client.FetchAppState(ctx, appstate.WAPatchRegularLow, true, false)
+	fullSyncErr := client.FetchAppState(ctx, patchName, true, false)
 	if fullSyncErr == nil {
 		return nil
 	}
 	requestMissingAppStateKeys(ctx, client, fullSyncErr)
-	if IsRetryableRegularLowAppStateError(fullSyncErr) {
-		if primeErr := primeRegularLowAppStateSnapshot(ctx, client); primeErr == nil {
+	if IsRetryableAppStateError(fullSyncErr, patchName) {
+		if primeErr := primeChatAppStateSnapshot(ctx, client, patchName); primeErr == nil {
 			return nil
 		} else {
-			return fmt.Errorf("%w (also failed full regular_low app state sync: %v; also failed to prime regular_low snapshot cursor: %w)", lastErr, fullSyncErr, primeErr)
+			return fmt.Errorf("%w (also failed full %s app state sync: %v; also failed to prime %s snapshot cursor: %w)", lastErr, patchName, fullSyncErr, patchName, primeErr)
 		}
 	}
-	return fmt.Errorf("%w (also failed full regular_low app state sync: %v)", lastErr, fullSyncErr)
+	return fmt.Errorf("%w (also failed full %s app state sync: %v)", lastErr, patchName, fullSyncErr)
 }
 
 func IsRetryableRegularLowAppStateError(err error) bool {
+	return IsRetryableAppStateError(err, appstate.WAPatchRegularLow)
+}
+
+func IsRetryableAppStateError(err error, patchName appstate.WAPatchName) bool {
 	if err == nil {
 		return false
 	}
 	errorText := strings.ToLower(err.Error())
-	if !strings.Contains(errorText, "regular_low") || !strings.Contains(errorText, "app state") {
+	if !strings.Contains(errorText, strings.ToLower(string(patchName))) ||
+		!strings.Contains(errorText, "app state") {
 		return false
 	}
 	return strings.Contains(errorText, "conflict") ||
@@ -206,31 +258,36 @@ func requestMissingAppStateKeys(ctx context.Context, client ChatArchiveAppStateC
 	requester.RequestAppStateKeys(ctx, keyIDs)
 }
 
-func requestRegularLowAppStateRecovery(ctx context.Context, client ChatArchiveAppStateClient) error {
+func requestChatAppStateRecovery(
+	ctx context.Context,
+	client ChatArchiveAppStateClient,
+	patchName appstate.WAPatchName,
+) error {
 	requester, ok := client.(ChatArchiveAppStateRecoveryRequester)
 	if !ok {
 		return nil
 	}
-	return requester.RequestAppStateRecovery(ctx, appstate.WAPatchRegularLow)
+	return requester.RequestAppStateRecovery(ctx, patchName)
 }
 
-func waitForChatArchiveAppStateRecovery(
+func waitForChatAppStateRecovery(
 	ctx context.Context,
 	client ChatArchiveAppStateClient,
+	patchName appstate.WAPatchName,
 	retryDelay time.Duration,
 ) error {
 	if retryDelay <= 0 {
 		return nil
 	}
 	if waiter, ok := client.(ChatArchiveAppStateSyncWaiter); ok {
-		err := waiter.WaitForAppStateSync(ctx, appstate.WAPatchRegularLow, retryDelay)
+		err := waiter.WaitForAppStateSync(ctx, patchName, retryDelay)
 		if err == nil {
 			return nil
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if errors.Is(err, context.DeadlineExceeded) || IsRetryableRegularLowAppStateError(err) {
+		if errors.Is(err, context.DeadlineExceeded) || IsRetryableAppStateError(err, patchName) {
 			return nil
 		}
 		return err
@@ -245,12 +302,16 @@ func waitForChatArchiveAppStateRecovery(
 	}
 }
 
-func primeRegularLowAppStateSnapshot(ctx context.Context, client ChatArchiveAppStateClient) error {
+func primeChatAppStateSnapshot(
+	ctx context.Context,
+	client ChatArchiveAppStateClient,
+	patchName appstate.WAPatchName,
+) error {
 	primer, ok := client.(ChatArchiveAppStateSnapshotPrimer)
 	if !ok {
 		return nil
 	}
-	return primer.PrimeAppStateSnapshotVersion(ctx, appstate.WAPatchRegularLow)
+	return primer.PrimeAppStateSnapshotVersion(ctx, patchName)
 }
 
 func MissingAppStateKeyIDs(err error) [][]byte {
