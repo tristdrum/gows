@@ -1,0 +1,152 @@
+package main
+
+import (
+	"github.com/caarlos0/env/v11"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+)
+
+type ClientConfig struct {
+	BrowserName string `env:"WAHA_CLIENT_BROWSER_NAME" envDefault:"Firefox"`
+	DeviceName  string `env:"WAHA_CLIENT_DEVICE_NAME"  envDefault:"Ubuntu"`
+}
+
+func getClientConfig() ClientConfig {
+	cfg := ClientConfig{}
+	if err := env.Parse(&cfg); err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+// DevicePropsConfig holds optional overrides for waCompanionReg.DeviceProps.
+// Each Maybe field has three states:
+//
+//	Set=false          → env var absent or empty string, field is left unchanged
+//	Set=true, Value=nil → env var was "null", proto field set to nil
+//	Set=true, Value=v   → env var parsed successfully, proto field set to v
+type DevicePropsConfig struct {
+	RequireFullSync Maybe[*bool] `env:"WAHA_GOWS_DEVICE_REQUIRE_FULL_SYNC"`
+
+	// DeviceProps_HistorySyncConfig fields
+	FullSyncDaysLimit                        Maybe[*uint32] `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_DAYS_LIMIT"`
+	FullSyncSizeMbLimit                      Maybe[*uint32] `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_FULL_SYNC_SIZE_MB_LIMIT"`
+	StorageQuotaMb                           Maybe[*uint32] `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_STORAGE_QUOTA_MB"`
+	InlineInitialPayloadInE2EeMsg            Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_INLINE_INITIAL_PAYLOAD_IN_E2EE_MSG"`
+	RecentSyncDaysLimit                      Maybe[*uint32] `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_RECENT_SYNC_DAYS_LIMIT"`
+	SupportCallLogHistory                    Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_CALL_LOG_HISTORY"`
+	SupportBotUserAgentChatHistory           Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_BOT_USER_AGENT_CHAT_HISTORY"`
+	SupportCagReactionsAndPolls              Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_CAG_REACTIONS_AND_POLLS"`
+	SupportBizHostedMsg                      Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_BIZ_HOSTED_MSG"`
+	SupportRecentSyncChunkMessageCountTuning Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_RECENT_SYNC_CHUNK_MESSAGE_COUNT_TUNING"`
+	SupportHostedGroupMsg                    Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_HOSTED_GROUP_MSG"`
+	SupportFbidBotChatHistory                Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_FBID_BOT_CHAT_HISTORY"`
+	SupportAddOnHistorySyncMigration         Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_ADD_ON_HISTORY_SYNC_MIGRATION"`
+	SupportMessageAssociation                Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_MESSAGE_ASSOCIATION"`
+	SupportGroupHistory                      Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_GROUP_HISTORY"`
+	OnDemandReady                            Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_ON_DEMAND_READY"`
+	SupportGuestChat                         Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_GUEST_CHAT"`
+	CompleteOnDemandReady                    Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_COMPLETE_ON_DEMAND_READY"`
+	ThumbnailSyncDaysLimit                   Maybe[*uint32] `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_THUMBNAIL_SYNC_DAYS_LIMIT"`
+	InitialSyncMaxMessagesPerChat            Maybe[*uint32] `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_INITIAL_SYNC_MAX_MESSAGES_PER_CHAT"`
+	SupportManusHistory                      Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_MANUS_HISTORY"`
+	SupportHatchHistory                      Maybe[*bool]   `env:"WAHA_GOWS_DEVICE_HISTORY_SYNC_SUPPORT_HATCH_HISTORY"`
+}
+
+// PatchDeviceProps applies DevicePropsConfig overrides onto the current device props.
+func PatchDeviceProps(props *waCompanionReg.DeviceProps) {
+	cfg := DevicePropsConfig{}
+	if err := env.Parse(&cfg); err != nil {
+		panic(err)
+	}
+
+	if cfg.RequireFullSync.Set {
+		props.RequireFullSync = cfg.RequireFullSync.Value
+	}
+
+	hasHistory := cfg.FullSyncDaysLimit.Set || cfg.FullSyncSizeMbLimit.Set ||
+		cfg.StorageQuotaMb.Set || cfg.InlineInitialPayloadInE2EeMsg.Set ||
+		cfg.RecentSyncDaysLimit.Set || cfg.SupportCallLogHistory.Set ||
+		cfg.SupportBotUserAgentChatHistory.Set || cfg.SupportCagReactionsAndPolls.Set ||
+		cfg.SupportBizHostedMsg.Set || cfg.SupportRecentSyncChunkMessageCountTuning.Set ||
+		cfg.SupportHostedGroupMsg.Set || cfg.SupportFbidBotChatHistory.Set ||
+		cfg.SupportAddOnHistorySyncMigration.Set || cfg.SupportMessageAssociation.Set ||
+		cfg.SupportGroupHistory.Set || cfg.OnDemandReady.Set || cfg.SupportGuestChat.Set ||
+		cfg.CompleteOnDemandReady.Set || cfg.ThumbnailSyncDaysLimit.Set ||
+		cfg.InitialSyncMaxMessagesPerChat.Set || cfg.SupportManusHistory.Set ||
+		cfg.SupportHatchHistory.Set
+
+	if !hasHistory {
+		return
+	}
+
+	if props.HistorySyncConfig == nil {
+		props.HistorySyncConfig = &waCompanionReg.DeviceProps_HistorySyncConfig{}
+	}
+	h := props.HistorySyncConfig
+	if cfg.FullSyncDaysLimit.Set {
+		h.FullSyncDaysLimit = cfg.FullSyncDaysLimit.Value
+	}
+	if cfg.FullSyncSizeMbLimit.Set {
+		h.FullSyncSizeMbLimit = cfg.FullSyncSizeMbLimit.Value
+	}
+	if cfg.StorageQuotaMb.Set {
+		h.StorageQuotaMb = cfg.StorageQuotaMb.Value
+	}
+	if cfg.InlineInitialPayloadInE2EeMsg.Set {
+		h.InlineInitialPayloadInE2EeMsg = cfg.InlineInitialPayloadInE2EeMsg.Value
+	}
+	if cfg.RecentSyncDaysLimit.Set {
+		h.RecentSyncDaysLimit = cfg.RecentSyncDaysLimit.Value
+	}
+	if cfg.SupportCallLogHistory.Set {
+		h.SupportCallLogHistory = cfg.SupportCallLogHistory.Value
+	}
+	if cfg.SupportBotUserAgentChatHistory.Set {
+		h.SupportBotUserAgentChatHistory = cfg.SupportBotUserAgentChatHistory.Value
+	}
+	if cfg.SupportCagReactionsAndPolls.Set {
+		h.SupportCagReactionsAndPolls = cfg.SupportCagReactionsAndPolls.Value
+	}
+	if cfg.SupportBizHostedMsg.Set {
+		h.SupportBizHostedMsg = cfg.SupportBizHostedMsg.Value
+	}
+	if cfg.SupportRecentSyncChunkMessageCountTuning.Set {
+		h.SupportRecentSyncChunkMessageCountTuning = cfg.SupportRecentSyncChunkMessageCountTuning.Value
+	}
+	if cfg.SupportHostedGroupMsg.Set {
+		h.SupportHostedGroupMsg = cfg.SupportHostedGroupMsg.Value
+	}
+	if cfg.SupportFbidBotChatHistory.Set {
+		h.SupportFbidBotChatHistory = cfg.SupportFbidBotChatHistory.Value
+	}
+	if cfg.SupportAddOnHistorySyncMigration.Set {
+		h.SupportAddOnHistorySyncMigration = cfg.SupportAddOnHistorySyncMigration.Value
+	}
+	if cfg.SupportMessageAssociation.Set {
+		h.SupportMessageAssociation = cfg.SupportMessageAssociation.Value
+	}
+	if cfg.SupportGroupHistory.Set {
+		h.SupportGroupHistory = cfg.SupportGroupHistory.Value
+	}
+	if cfg.OnDemandReady.Set {
+		h.OnDemandReady = cfg.OnDemandReady.Value
+	}
+	if cfg.SupportGuestChat.Set {
+		h.SupportGuestChat = cfg.SupportGuestChat.Value
+	}
+	if cfg.CompleteOnDemandReady.Set {
+		h.CompleteOnDemandReady = cfg.CompleteOnDemandReady.Value
+	}
+	if cfg.ThumbnailSyncDaysLimit.Set {
+		h.ThumbnailSyncDaysLimit = cfg.ThumbnailSyncDaysLimit.Value
+	}
+	if cfg.InitialSyncMaxMessagesPerChat.Set {
+		h.InitialSyncMaxMessagesPerChat = cfg.InitialSyncMaxMessagesPerChat.Value
+	}
+	if cfg.SupportManusHistory.Set {
+		h.SupportManusHistory = cfg.SupportManusHistory.Value
+	}
+	if cfg.SupportHatchHistory.Set {
+		h.SupportHatchHistory = cfg.SupportHatchHistory.Value
+	}
+}

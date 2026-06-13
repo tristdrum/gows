@@ -1,0 +1,12 @@
+repos:
+  - repo: https://github.com/sqlfluff/sqlfluff
+    rev: 3.3.0
+    hooks:
+      - id: sqlfluff-fix
+        args: ["--dialect", "postgres"]
+      - id: sqlfluff-lint
+        name: sqlfluff-lint [sqlite]
+        args: ["--dialect", "sqlite"]
+      - id: sqlfluff-lint
+        name: sqlfluff-lint [postgres]
+        args: ["--dialect", "postgres"]

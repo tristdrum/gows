@@ -1,0 +1,97 @@
+name: Release Build and Publish
+
+on:
+  push:
+    tags:
+      - '*'
+
+env:
+  TARGET_REPO: devlikeapro/gows
+  PROTO_SRC_DIR: proto
+
+jobs:
+  build-binaries:
+    name: Build Binaries (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - runner: 'ubuntu-latest'
+            platform: 'x64'
+            binary_name: 'gows-amd64'
+          - runner: 'ubuntu-24.04-arm'
+            platform: 'arm64'
+            binary_name: 'gows-arm64'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Build
+        run: |
+          docker build -t gows .
+
+      - name: Copy binary to release directory
+        run: |
+          docker create --name temp-gows gows
+          mkdir -p .bin
+          docker cp temp-gows:/release/gows ./.bin/gows
+          docker rm temp-gows
+          mkdir -p release
+          mv ./.bin/gows release/${{ matrix.binary_name }}
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.platform }}
+          path: release/${{ matrix.binary_name }}
+          retention-days: 1
+
+  collect-proto:
+    name: Collect Proto Files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Upload proto artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: proto
+          path: proto/
+          retention-days: 1
+
+  publish-release:
+    name: Publish Release
+    needs: [ build-binaries, collect-proto ]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Setup GitHub CLI
+        env:
+          CLI_GH_TOKEN: ${{ secrets.TARGET_REPO_TOKEN }}
+        run: |
+          gh auth login --with-token <<< "$CLI_GH_TOKEN"
+          gh config set prompt disabled
+
+      - name: Create new release
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --repo "$TARGET_REPO" \
+            --title "$RELEASE_TAG"
+
+      - name: Upload release assets
+        run: |
+          find artifacts -type f -print0 | while IFS= read -r -d '' file; do
+            gh release upload "$RELEASE_TAG" \
+              --repo "$TARGET_REPO" \
+              --clobber \
+              "$file"
+          done

@@ -1,0 +1,806 @@
+syntax = "proto3";
+
+package messages;
+
+option go_package = "/";
+//
+// Common types
+//
+message OptionalString {
+  string value = 1;
+}
+
+message OptionalUInt32 {
+  uint32 value = 1;
+}
+
+message OptionalUInt64 {
+  uint64 value = 1;
+}
+message OptionalInt64 {
+  int64 value = 1;
+}
+message OptionalBool {
+  bool value = 1;
+}
+message OptionalDouble {
+  double value = 1;
+}
+
+//
+// Session + Jid shortcuts
+//
+message JidRequest {
+  Session session = 1;
+  string jid = 2;
+}
+
+message JidStringRequest {
+  Session session = 1;
+  string jid = 2;
+  string value = 3;
+}
+
+message JidBoolRequest {
+  Session session = 1;
+  string jid = 2;
+  bool value = 3;
+}
+
+
+//
+// Events
+//
+service EventStream {
+  rpc StreamEvents(StreamEventsRequest) returns (stream EventJson);
+}
+
+message EventJson {
+  string session = 2;
+  string event = 1;
+  string data = 3;
+}
+
+message StreamEventsRequest {
+  Session session = 1;
+  repeated string exclude = 2;
+}
+
+service MessageService {
+  //
+  // Session management
+  //
+  rpc StartSession(StartSessionRequest) returns (Empty);
+  rpc StopSession(Session) returns (Empty);
+  rpc GetSessionState(Session) returns (SessionStateResponse);
+  rpc RequestCode(PairCodeRequest) returns (PairCodeResponse);
+  rpc Logout(Session) returns (Empty);
+  //
+  // Profile
+  //
+  rpc SetProfileName(ProfileNameRequest) returns (Empty);
+  rpc SetProfileStatus(ProfileStatusRequest) returns (Empty);
+  rpc SetProfilePicture(SetProfilePictureRequest) returns (Empty);
+
+  //
+  // Lids
+  //
+  rpc GetAllLids(GetLidsRequest) returns (JsonList);
+  rpc GetLidsCount(Session) returns (OptionalUInt64);
+  rpc FindPNByLid(EntityByIdRequest) returns (OptionalString);
+  rpc FindLIDByPhoneNumber(EntityByIdRequest) returns (OptionalString);
+
+  //
+  // Groups
+  //
+  rpc FetchGroups(Session) returns (Empty);
+  rpc GetGroups(Session) returns (JsonList);
+  rpc GetGroupInfo(JidRequest) returns (Json);
+  rpc CreateGroup(CreateGroupRequest) returns (Json);
+  rpc LeaveGroup(JidRequest) returns (Empty);
+  rpc GetGroupInviteLink(JidRequest) returns (OptionalString);
+  rpc RevokeGroupInviteLink(JidRequest) returns (OptionalString);
+  rpc GetGroupInfoFromLink(GroupCodeRequest) returns (Json);
+  rpc JoinGroupWithLink(GroupCodeRequest) returns (Json);
+  rpc SetGroupName(JidStringRequest) returns (Empty);
+  rpc SetGroupDescription(JidStringRequest) returns (Empty);
+  rpc SetGroupPicture(SetPictureRequest) returns (Empty);
+  rpc SetGroupLocked(JidBoolRequest) returns (Empty); // change info only by admins
+  rpc SetGroupAnnounce(JidBoolRequest) returns (Empty); // send messages only by admins
+  rpc UpdateGroupParticipants(UpdateParticipantsRequest) returns (JsonList);
+
+  //
+  // Actions
+  //
+  rpc GetProfilePicture (ProfilePictureRequest) returns (ProfilePictureResponse);
+  rpc SendPresence(PresenceRequest) returns (Empty);
+  rpc SendChatPresence(ChatPresenceRequest) returns (Empty);
+  rpc SubscribePresence(SubscribePresenceRequest) returns (Empty);
+  rpc CheckPhones(CheckPhonesRequest) returns (CheckPhonesResponse);
+  rpc MarkChatUnread(ChatUnreadRequest) returns (Empty);
+  rpc SetChatArchive(ChatArchiveRequest) returns (Empty);
+
+  //
+  // Message
+  //
+  rpc GenerateNewMessageID (Session) returns (NewMessageIDResponse);
+  rpc SendMessage (MessageRequest) returns (MessageResponse);
+  rpc SendReaction (MessageReaction) returns (MessageResponse);
+  rpc MarkRead(MarkReadRequest) returns (Empty);
+  rpc EditMessage(EditMessageRequest) returns (MessageResponse);
+  rpc RevokeMessage(RevokeMessageRequest) returns (MessageResponse);
+  rpc SendButtonReply (ButtonReplyRequest) returns (MessageResponse);
+
+  //
+  // Newsletters
+  //
+  rpc GetSubscribedNewsletters(NewsletterListRequest) returns (NewsletterList);
+  rpc GetNewsletterInfo(NewsletterInfoRequest) returns (Newsletter);
+  rpc GetNewsletterMessagesByInvite(GetNewsletterMessagesByInviteRequest) returns (Json);
+  rpc SearchNewslettersByView(SearchNewslettersByViewRequest) returns (NewsletterSearchPageResult);
+  rpc SearchNewslettersByText(SearchNewslettersByTextRequest) returns (NewsletterSearchPageResult);
+  rpc CreateNewsletter(CreateNewsletterRequest) returns (Newsletter);
+  rpc NewsletterToggleMute(NewsletterToggleMuteRequest) returns (Empty);
+  rpc NewsletterToggleFollow(NewsletterToggleFollowRequest) returns (Empty);
+
+  //
+  // Labels
+  //
+  rpc GetLabels(GetLabelsRequest) returns (JsonList);
+  rpc UpsertLabel(UpsertLabelRequest) returns (Empty);
+  rpc DeleteLabel(DeleteLabelRequest) returns (Empty);
+  rpc AddChatLabel(ChatLabelRequest) returns (Empty);
+  rpc RemoveChatLabel(ChatLabelRequest) returns (Empty);
+  rpc GetLabelsByJid(EntityByIdRequest) returns (JsonList);
+  rpc GetChatsByLabelId(EntityByIdRequest) returns (JsonList);
+
+  //
+  // Contacts
+  //
+  rpc UpdateContact(UpdateContactRequest) returns (Empty);
+  rpc GetContacts(GetContactsRequest) returns (JsonList);
+  rpc GetContactById(EntityByIdRequest) returns (Json);
+
+  //
+  // Events
+  //
+  rpc CancelEventMessage(CancelEventMessageRequest) returns (MessageResponse);
+
+  //
+  // Media
+  //
+  rpc DownloadMedia(DownloadMediaRequest) returns (DownloadMediaResponse);
+
+  //
+  // Calls
+  //
+  rpc RejectCall(RejectCallRequest) returns (Empty);
+
+  //
+  // Storage
+  //
+  rpc GetMessageById(EntityByIdRequest) returns (Json);
+  rpc GetMessages(GetMessagesRequest) returns (JsonList);
+
+
+  rpc GetChats(GetChatsRequest) returns (JsonList);
+
+}
+
+
+
+
+//
+// Session management
+//
+message PairCodeRequest {
+  Session session = 1;
+  string phone = 2;
+}
+
+message PairCodeResponse {
+  string code = 1;
+}
+
+message Empty {}
+
+enum LogLevel {
+  TRACE = 0;
+  DEBUG = 1;
+  INFO = 2;
+  WARN = 3;
+  ERROR = 4;
+}
+
+message SessionLogConfig {
+  LogLevel level = 1;
+}
+
+message SessionStoreConfig {
+  string dialect = 2;
+  string address = 3;
+}
+
+message SessionStorageConfig {
+  optional bool messages = 1;
+  optional bool groups = 2;
+  optional bool chats = 3;
+  optional bool labels = 4;
+}
+
+message SessionProxyConfig {
+  string url = 1;
+}
+
+message SessionIgnoreJidsConfig {
+  bool status = 1;
+  bool groups = 2;
+  bool newsletters = 3;
+  bool broadcast = 4;
+}
+
+message SessionConfig {
+  SessionStoreConfig store = 1;
+  SessionLogConfig log = 2;
+  SessionProxyConfig proxy = 3;
+  optional SessionIgnoreJidsConfig ignore = 4;
+  optional SessionStorageConfig storage = 5;
+}
+
+message StartSessionRequest {
+  string id = 1;
+  SessionConfig config = 2;
+}
+message SessionStateResponse {
+  bool found = 1;
+  bool connected = 2;
+}
+
+message Session {
+  string id = 1;
+}
+
+//
+// Profile
+//
+message ProfileNameRequest {
+  Session session = 1;
+  string name = 2;
+}
+
+message ProfileStatusRequest {
+  Session session = 1;
+  string status = 2;
+}
+
+message SetProfilePictureRequest {
+  Session session = 1;
+  bytes picture = 2;
+}
+
+message CreateGroupRequest {
+  Session session = 1;
+  string name = 2;
+  repeated string participants = 3;
+}
+
+message SetPictureRequest {
+  Session session = 1;
+  string jid = 2;
+  bytes picture = 3;
+}
+
+enum ParticipantAction {
+  ADD = 0;
+  REMOVE = 1;
+  PROMOTE = 2;
+  DEMOTE = 3;
+}
+
+message UpdateParticipantsRequest {
+  Session session = 1;
+  string jid = 2;
+  repeated string participants = 3;
+  ParticipantAction action = 4;
+}
+message GroupCodeRequest {
+  Session session = 1;
+  string code = 2;
+}
+
+
+//
+// Actions
+//
+enum MediaType {
+  IMAGE = 0;
+  AUDIO = 1;
+  VIDEO = 2;
+  DOCUMENT = 3;
+  PTV = 4;
+}
+
+message AudioInfo {
+  float duration = 1;
+  bytes waveform = 2;
+}
+
+message VideoInfo {
+  float duration = 1;
+}
+
+message Media {
+  bytes content = 1;
+  MediaType type = 2;
+  string mimetype = 3;
+  AudioInfo audio = 4;
+  string filename = 5;
+  string contentPath = 6;
+  VideoInfo video = 7;
+}
+
+message LinkPreview {
+  string url = 1;
+  string title = 2;
+  string description = 3;
+  bytes image = 4;
+}
+
+message vCardContact {
+  string displayName = 1;
+  string vcard = 3;
+}
+
+message EventLocation {
+  string name = 1;
+  optional double degreesLongitude = 2;
+  optional double degreesLatitude = 3;
+}
+
+message Location {
+  optional string name = 1;
+  double degreesLongitude = 2;
+  double degreesLatitude = 3;
+}
+
+message EventMessage {
+  string name = 1;
+  optional string description = 2;
+  int64 startTime = 3;
+  optional int64 endTime = 4;
+  bool extraGuestsAllowed = 5;
+  EventLocation location = 6;
+}
+
+message MessageRequest {
+  Session session = 1;
+  string jid = 2;
+  string text = 3;
+  Media media = 4;
+
+  OptionalString backgroundColor = 5;
+  OptionalUInt32 font = 6;
+  bool linkPreview = 7;
+  bool linkPreviewHighQuality = 8;
+
+  string replyTo = 9;
+  // Pre-generated message ID
+  string id = 10;
+  // Status Message
+  repeated string participants = 11;
+
+  // Custom link preview
+  LinkPreview preview = 12;
+
+  // Contact message
+  repeated vCardContact contacts = 13;
+
+  // Event message
+  EventMessage event = 14;
+
+  // Poll message
+  PollMessage poll = 15;
+
+  // List message
+  ListMessage list = 16;
+
+  // Location message
+  Location location = 17;
+
+  // Poll vote message
+  PollVoteMessage pollVote = 18;
+
+  repeated string mentions = 19;
+}
+
+message Row {
+  string title = 1;
+  optional string description = 2;
+  string rowId = 3;
+}
+
+message Section {
+  string title = 1;
+  repeated Row rows = 2;
+}
+
+message ListMessage {
+  string title = 1;
+  optional string description = 2;
+  optional string footer = 3;
+  string button = 4;
+  repeated Section sections = 5;
+}
+
+message MessageReaction {
+  Session session = 1;
+  string jid = 2;
+  string sender = 3;
+  string messageId = 4;
+  string reaction = 5;
+}
+
+message MessageResponse {
+  string id = 1;
+  int64 timestamp = 2;
+  Json message = 3;
+}
+
+message NewMessageIDResponse {
+  string id = 1;
+}
+
+message ProfilePictureRequest {
+  Session session = 1;
+  string jid = 2;
+}
+message ProfilePictureResponse {
+  string url = 2;
+}
+
+message ButtonReplyRequest {
+  Session session = 1;
+  string jid = 2;
+  string selectedDisplayText = 3;
+  string selectedButtonID = 4;
+  string replyTo = 5;
+}
+
+enum Presence {
+  AVAILABLE = 0;
+  UNAVAILABLE = 1;
+}
+
+message PresenceRequest {
+  Session session = 1;
+  Presence status = 2;
+}
+
+enum ChatPresence {
+  TYPING = 0;
+  RECORDING = 1;
+  PAUSED = 2;
+}
+
+message ChatPresenceRequest {
+  Session session = 1;
+  string jid = 2;
+  ChatPresence status = 3;
+}
+
+message SubscribePresenceRequest {
+  Session session = 1;
+  string jid = 2;
+}
+
+enum ReceiptType {
+  READ = 0;
+  PLAYED = 1;
+}
+
+message MarkReadRequest {
+  Session session = 1;
+  string jid = 2;
+  string sender = 3;
+  string messageId = 4;
+  ReceiptType type = 5;
+  repeated string messageIds = 6;
+}
+
+message CheckPhonesRequest {
+  Session session = 1;
+  repeated string phones = 2;
+}
+
+message ChatUnreadRequest {
+  Session session = 1;
+  string jid = 2;
+  bool read = 3;
+}
+
+message ChatArchiveRequest {
+  Session session = 1;
+  string jid = 2;
+  bool archive = 3;
+}
+
+message PhoneInfo {
+  string phone = 1;
+  string jid = 2;
+  bool registered = 3;
+}
+
+message CheckPhonesResponse {
+  repeated PhoneInfo infos = 1;
+}
+
+message RevokeMessageRequest {
+  Session session = 1;
+  string jid = 2;
+  string sender = 3;
+  string messageId = 4;
+  repeated string participants = 5;
+}
+
+message EditMessageRequest {
+  Session session = 1;
+  string jid = 2;
+  string messageId = 4;
+  string text = 5;
+  bool linkPreview = 6;
+  bool linkPreviewHighQuality = 7;
+}
+
+//
+// Newsletters
+//
+message NewsletterListRequest {
+  Session session = 1;
+}
+
+message Newsletter {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string invite = 4;
+  string preview = 6;
+  string picture = 5;
+  bool verified = 7;
+  string role = 8;
+  int64 subscriberCount = 9;
+}
+
+message NewsletterList {
+  repeated Newsletter newsletters = 1;
+}
+
+message NewsletterInfoRequest {
+  Session session = 1;
+  string id = 2;
+}
+
+message GetNewsletterMessagesByInviteRequest {
+  Session session = 1;
+  string invite = 2;
+  int64 limit = 3;
+}
+
+message SearchPage {
+  uint64 limit = 2;
+  string startCursor = 3;
+}
+
+message SearchNewslettersByViewRequest {
+  Session session = 1;
+  SearchPage page = 2;
+  string view = 3;
+  repeated string categories = 4;
+  repeated string countries = 5;
+}
+
+message SearchNewslettersByTextRequest {
+  Session session = 1;
+  SearchPage page = 2;
+  string text = 3;
+  repeated string categories = 4;
+}
+message SearchPageResult {
+  string startCursor = 1;
+  string endCursor = 2;
+  bool hasNextPage = 3;
+  bool hasPreviousPage = 4;
+}
+
+message NewsletterSearchPageResult {
+  SearchPageResult page = 1;
+  NewsletterList newsletters = 2;
+}
+
+message CreateNewsletterRequest {
+  Session session = 1;
+  string name = 2;
+  string description = 3;
+  bytes picture = 4;
+}
+
+message NewsletterToggleMuteRequest {
+  Session session = 1;
+  string jid = 2;
+  bool mute = 3;
+}
+
+message NewsletterToggleFollowRequest {
+  Session session = 1;
+  string jid = 2;
+  bool follow = 3;
+}
+
+
+//
+// Media
+//
+message DownloadMediaRequest {
+  Session session = 1;
+  string message = 2; // JSON string
+  string jid = 3;
+  string messageId = 4;
+  string contentPath = 5;
+}
+
+message DownloadMediaResponse {
+  bytes content = 1;
+  string contentPath = 5;
+}
+
+//
+// Storage
+//
+
+message EntityByIdRequest {
+  Session session = 1;
+  string id = 2;
+}
+
+message Json {
+  string data = 1;
+}
+
+message JsonList {
+  repeated Json elements = 1;
+}
+
+message Pagination {
+  uint64 limit = 1;
+  uint64 offset = 2;
+}
+
+message SortBy {
+  string field = 1;
+  enum Order {
+    ASC = 0;
+    DESC = 1;
+  }
+  Order order = 2;
+}
+
+
+//
+// Storage - Messages
+//
+message MessageFilters {
+  OptionalString jid = 1;
+  OptionalUInt64 timestampGte = 2;
+  OptionalUInt64 timestampLte = 3;
+  OptionalBool fromMe = 4;
+  OptionalUInt32 status = 5;
+}
+
+message GetMessagesRequest {
+  Session session = 1;
+  MessageFilters filters = 2;
+  Pagination pagination = 3;
+  SortBy sortBy = 4;
+  OptionalBool merge = 5;
+}
+
+//
+// Contacts
+//
+
+message UpdateContactRequest {
+  Session session = 1;
+  string jid = 2;
+  string firstName = 3;
+  string lastName = 4;
+}
+
+message GetContactsRequest {
+  Session session = 1;
+  SortBy sortBy = 2;
+  Pagination pagination = 3;
+}
+
+//
+// Storage - Chats
+//
+message ChatFilter {
+  repeated string jids = 1;
+}
+
+message GetChatsRequest {
+  Session session = 1;
+  SortBy sortBy = 2;
+  Pagination pagination = 3;
+  ChatFilter filter = 4;
+  OptionalBool merge = 5;
+}
+
+//
+// Labels
+//
+message GetLabelsRequest {
+  Session session = 1;
+}
+
+message Label {
+  string id = 1;
+  string name = 2;
+  int32 color = 4;
+}
+
+message UpsertLabelRequest {
+  Session session = 1;
+  Label label = 2;
+}
+
+message DeleteLabelRequest{
+  Session session = 1;
+  Label label = 2;
+}
+
+
+message ChatLabelRequest {
+  Session session = 1;
+  string chatId = 2;
+  string labelId = 3;
+}
+
+//
+// Events
+//
+message CancelEventMessageRequest {
+  Session session = 1;
+  string jid = 2;
+  string messageId = 4;
+}
+
+//
+// Lids
+//
+message GetLidsRequest {
+  Session session = 1;
+}
+
+//
+// Lids
+//
+message RejectCallRequest {
+  Session session = 1;
+  string from = 2;
+  string id = 3;
+}
+
+//
+// Poll
+//
+message PollMessage {
+  string name = 1;
+  repeated string options = 2;
+  bool multipleAnswers = 3;
+}
+
+message PollVoteMessage {
+  string pollMessageId = 1;
+  optional int64 pollServerId = 2;  // only for Channels
+  repeated string options = 3;
+}

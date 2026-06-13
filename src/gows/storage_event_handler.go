@@ -1,0 +1,493 @@
+package gows
+
+import (
+	"errors"
+	"runtime/debug"
+	"time"
+
+	"github.com/avast/retry-go"
+	"github.com/devlikeapro/gows/storage"
+	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waHistorySync"
+	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
+	waLog "go.mau.fi/whatsmeow/util/log"
+)
+
+// StorageEventHandler handles events from WhatsApp and stores them in the database.
+// It can be configured to ignore events from certain types of JIDs based on their server type.
+type StorageEventHandler struct {
+	gows    *GoWS
+	log     waLog.Logger
+	storage *storage.Storage
+	// ignoreJids specifies which types of JIDs should be ignored when processing events.
+	ignoreJids *IgnoreJidsConfig
+}
+
+func (st *StorageEventHandler) shouldIgnoreJID(jid types.JID) bool {
+	if jid.IsEmpty() {
+		return false
+	}
+
+	if st.ignoreJids == nil {
+		return false
+	}
+
+	// Check if the JID should be ignored based on its server type
+	switch jid.Server {
+	case types.BroadcastServer:
+		// Do not filter status@broadcast when broadcast-ignore is enabled:
+		// it is controlled by the dedicated Status flag.
+		if jid.User == "status" {
+			return st.ignoreJids.Status
+		}
+		return st.ignoreJids.Broadcast
+	case types.GroupServer:
+		return st.ignoreJids.Groups
+	case types.NewsletterServer:
+		return st.ignoreJids.Newsletters
+	default:
+		return false
+	}
+}
+
+func (st *StorageEventHandler) GetMessageForRetry(requester, to types.JID, id types.MessageID) *waE2E.Message {
+	msg, err := st.storage.Messages.GetMessage(id)
+	if err != nil {
+		st.log.Errorf("Error getting message for retry - requester %v, to %v, id %v: %v", requester, to, id, err)
+		return nil
+	}
+	return msg.Message.RawMessage
+}
+
+func isRealMessage(event *events.Message) bool {
+	if event.Message == nil {
+		return false
+	}
+	msg := event.Message
+	switch {
+	case msg.Conversation != nil:
+		return true
+	case msg.ExtendedTextMessage != nil:
+		return true
+	case msg.ImageMessage != nil:
+		return true
+	case msg.ContactMessage != nil:
+		return true
+	case msg.LocationMessage != nil:
+		return true
+	case msg.VideoMessage != nil:
+		return true
+	case msg.PtvMessage != nil:
+		return true
+	case msg.AudioMessage != nil:
+		return true
+	case msg.DocumentMessage != nil:
+		return true
+	case msg.DocumentWithCaptionMessage != nil:
+		return true
+	case msg.StickerMessage != nil:
+		return true
+	case msg.ContactsArrayMessage != nil:
+		return true
+	case msg.TemplateMessage != nil:
+		return true
+	case msg.ListMessage != nil:
+		return true
+	case msg.RichResponseMessage != nil:
+		return true
+	case msg.PollCreationMessage != nil:
+		return true
+	case msg.PollCreationMessageV2 != nil:
+		return true
+	case msg.PollCreationMessageV3 != nil:
+		return true
+	case msg.PollCreationMessageV4 != nil:
+		return true
+	case msg.PollCreationMessageV5 != nil:
+		return true
+	case msg.ButtonsResponseMessage != nil:
+		return true
+	default:
+		return false
+	}
+}
+
+func (st *StorageEventHandler) handleEvent(event interface{}) {
+	// Handle all panic and log error + stack
+	defer func() {
+		if err := recover(); err != nil {
+			stack := debug.Stack()
+			st.log.Errorf("Panic happened in handle event: %v. Stack: %s. Event: %v", err, stack, event)
+		}
+	}()
+
+	switch event.(type) {
+	case *events.Message:
+		msg := event.(*events.Message)
+		if st.shouldIgnoreJID(msg.Info.Chat) {
+			return
+		}
+		var status storage.Status
+		if msg.Info.IsFromMe {
+			status = storage.StatusServerAck
+		} else {
+			status = storage.StatusDeliveryAck
+		}
+		st.handleSaveMessage(msg, &status)
+		st.handleMessageEvent(msg)
+	case *events.Receipt:
+		receipt := event.(*events.Receipt)
+		if st.shouldIgnoreJID(receipt.Chat) {
+			return
+		}
+		st.handleReceipt(receipt)
+	case *events.HistorySync:
+		st.handleHistorySync(event.(*events.HistorySync))
+	// Groups
+	case *events.JoinedGroup:
+		group := event.(*events.JoinedGroup)
+		if st.shouldIgnoreJID(group.JID) {
+			return
+		}
+		st.handleMeJoinedGroup(group)
+	case *events.GroupInfo:
+		info := event.(*events.GroupInfo)
+		if st.shouldIgnoreJID(info.JID) {
+			return
+		}
+		left := st.handleMeLeftGroup(info)
+		if left {
+			return
+		}
+		st.handleGroupInfo(info)
+	case *events.DeleteChat:
+		deleteChat := event.(*events.DeleteChat)
+		if st.shouldIgnoreJID(deleteChat.JID) {
+			return
+		}
+		st.handleDeleteChat(deleteChat)
+	case *events.Contact:
+		contact := event.(*events.Contact)
+		if st.shouldIgnoreJID(contact.JID) {
+			return
+		}
+		st.handleContact(contact)
+	// Labels
+	case *events.LabelEdit:
+		st.handleLabelEdit(event.(*events.LabelEdit))
+	case *events.LabelAssociationChat:
+		labelAssoc := event.(*events.LabelAssociationChat)
+		if st.shouldIgnoreJID(labelAssoc.JID) {
+			return
+		}
+		st.handleLabelAssociationChat(labelAssoc)
+	}
+}
+
+func (st *StorageEventHandler) handleSaveMessage(event *events.Message, status *storage.Status) {
+	messageToStore := &storage.StoredMessage{
+		Message: event,
+		Status:  status,
+		IsReal:  isRealMessage(event),
+	}
+
+	err := st.storage.Messages.UpsertOneMessage(messageToStore)
+	if err != nil {
+		st.log.Errorf("Error storing message %v(%v): %v", event.Info.Chat, event.Info.ID, err)
+	}
+}
+
+func (st *StorageEventHandler) handleMessageEvent(event *events.Message) {
+	// Revoked message
+	isRevoked := event.Message.ProtocolMessage != nil && *event.Message.ProtocolMessage.Type == waE2E.ProtocolMessage_REVOKE
+	if isRevoked {
+		err := st.storage.Messages.DeleteMessage(*event.Message.ProtocolMessage.Key.ID)
+		if err != nil {
+			st.log.Errorf("Error deleting message %v: %v", *event.Message.ProtocolMessage.Key.ID, err)
+		}
+		return
+	}
+
+	// Chat ephemeral settings - changed
+	isProtocolMessage := event.Message != nil && event.Message.ProtocolMessage != nil
+	if isProtocolMessage {
+		setting := ExtractEphemeralSettingsFromProtocolMessage(event.Info, event.Message.ProtocolMessage)
+		if setting != nil {
+			err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
+			if err != nil {
+				st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
+			}
+			st.log.Debugf("Changed chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
+			return
+		}
+	}
+
+	// Chat ephemeral settings - from message
+	setting := ExtractEphemeralSettingsFromMsg(event)
+	if setting != nil {
+		err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
+		if err != nil {
+			st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
+		}
+		st.log.Debugf("Initial chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
+		// Do not return - we still need to handle the message
+		// return
+	}
+}
+
+func (st *StorageEventHandler) handleReceipt(event *events.Receipt) {
+	var status storage.Status
+	switch event.Type {
+	case types.ReceiptTypeDelivered:
+		status = storage.StatusDeliveryAck
+	case types.ReceiptTypeRead:
+		status = storage.StatusRead
+	case types.ReceiptTypePlayed:
+		status = storage.StatusPlayed
+	default:
+		st.log.Debugf("Unknown receipt type: %v", event.Type)
+		return
+	}
+	if event.Chat.Server == types.StatusBroadcastJID.Server && event.Chat.User == types.StatusBroadcastJID.User {
+		// Ignore
+		st.log.Debugf("Ignoring receipt for '%v(%v)'", event.Chat, event.MessageIDs)
+	}
+	for _, id := range event.MessageIDs {
+		st.log.Debugf("Updating status for message %v(%v) to %v (receipt type: '%v')", event.Chat, id, status, event.Type.GoString())
+		msg, err := st.storage.Messages.GetMessageWithRetries(id)
+		if errors.Is(err, storage.ErrNotFound) {
+			st.log.Debugf("Message %v(%v) not found", event.Chat, id)
+			continue
+		}
+		if err != nil {
+			st.log.Debugf("Error getting message - storage handle receipt %v(%v): %v", event.Chat, id, err)
+			continue
+		}
+		if msg.Status != nil && *msg.Status >= status {
+			continue
+		}
+		msg.Status = &status
+		err = st.storage.Messages.UpsertOneMessage(msg)
+		if err != nil {
+			st.log.Errorf("Error updating status for message %v(%v): %v", event.Chat, id, err)
+			continue
+		}
+		st.log.Debugf("Updated status for message %v(%v) to %v", event.Chat, id, status)
+	}
+}
+
+func (st *StorageEventHandler) handleHistorySync(event *events.HistorySync) {
+	for _, conv := range event.Data.Conversations {
+		jid, err := types.ParseJID(conv.GetID())
+		if err != nil {
+			st.log.Errorf("Error parsing JID: %v", err)
+			continue
+		}
+
+		// Skip this conversation if the JID should be ignored
+		if st.shouldIgnoreJID(jid) {
+			continue
+		}
+
+		go st.saveHistoryForOneChat(conv, jid)
+	}
+	st.log.Debugf("Saved history for %v chats", len(event.Data.Conversations))
+}
+
+func (st *StorageEventHandler) saveHistoryForOneChat(conv *waHistorySync.Conversation, chatJID types.JID) {
+	historyMessages := conv.GetMessages()
+	for _, historyMsg := range historyMessages {
+		message := historyMsg.GetMessage()
+		msg, err := st.gows.ParseWebMessage(chatJID, message)
+		if err != nil {
+			st.log.Errorf("Error parsing message: %v", err)
+			continue
+		}
+
+		var status storage.Status
+		if msg.SourceWebMsg != nil && msg.SourceWebMsg.Status != nil {
+			status = storage.Status(*msg.SourceWebMsg.Status)
+		}
+
+		st.handleSaveMessage(msg, &status)
+	}
+	st.log.Debugf("Saved %v messages in %v", len(conv.GetMessages()), chatJID)
+
+	setting := ExtractEphemeralSettingsFromConversation(conv, chatJID)
+	if setting != nil {
+		err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
+		if err != nil {
+			st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
+		}
+		st.log.Debugf("Initial chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
+	}
+}
+
+func (st *StorageEventHandler) handleMeJoinedGroup(group *events.JoinedGroup) {
+	err := st.storage.Groups.UpsertOneGroup(&group.GroupInfo)
+	if err != nil {
+		st.log.Errorf("Error storing group %v: %v", group.JID, err)
+	}
+	st.log.Debugf("I joined group %v", group.JID)
+}
+
+func (st *StorageEventHandler) handleMeLeftGroup(info *events.GroupInfo) bool {
+	jid := st.gows.Store.ID
+	for _, leave := range info.Leave {
+		if leave == jid.ToNonAD() {
+			st.log.Debugf("I left group %v", info.JID)
+			err := st.storage.Groups.DeleteGroup(info.JID)
+			if err != nil {
+				st.log.Errorf("Error deleting group %v: %v", info.JID, err)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func (st *StorageEventHandler) handleGroupInfo(info *events.GroupInfo) {
+	err := retry.Do(func() error {
+		return st.storage.Groups.UpdateGroup(info)
+	})
+	if err != nil {
+		st.log.Errorf("Error updating group %v: %v", info.JID, err)
+	}
+	return
+}
+
+func (st *StorageEventHandler) handleDeleteChat(event *events.DeleteChat) {
+	err := st.storage.Messages.DeleteChatMessages(event.JID, event.Timestamp)
+	if err != nil {
+		st.log.Errorf("Error deleting chat messages %v: %v", event.JID, err)
+	}
+	err = st.storage.ChatEphemeralSetting.DeleteChatEphemeralSetting(event.JID, event.Timestamp)
+	if err != nil {
+		st.log.Errorf("Error deleting chat ephemeral setting %v: %v", event.JID, err)
+	}
+	st.log.Debugf("Deleted chat %v", event.JID)
+}
+
+func (st *StorageEventHandler) handleLabelEdit(event *events.LabelEdit) {
+	if event.Action == nil {
+		return
+	}
+	action := *event.Action
+	// Delete
+	if action.Deleted != nil && *action.Deleted {
+		err := st.storage.Labels.DeleteLabel(event.LabelID)
+		if err != nil {
+			st.log.Errorf("Error deleting label %v: %v", event.LabelID, err)
+			return
+		}
+		st.log.Debugf("Deleted label %v", event.LabelID)
+		return
+	}
+
+	// Create
+	label := &storage.Label{
+		ID:    event.LabelID,
+		Name:  *action.Name,
+		Color: int(*action.Color),
+	}
+
+	err := st.storage.Labels.UpsertLabel(label)
+	if err != nil {
+		st.log.Errorf("Error upserting label %v: %v", label.ID, err)
+		return
+	}
+
+	st.log.Debugf("Upserted label %v (%v)", label.ID, label.Name)
+}
+
+func (st *StorageEventHandler) handleLabelAssociationChat(event *events.LabelAssociationChat) {
+	// Get the association data directly from the event
+	jid := event.JID
+	labelID := event.LabelID
+	labeled := event.Action.Labeled
+
+	if labeled != nil && *labeled {
+		// Make sure we have the label
+		// it can happen on full sync or event disordering
+		err := retry.Do(
+			func() error {
+				_, err := st.storage.Labels.GetLabelById(labelID)
+				if err != nil {
+					return err
+				}
+				return nil
+			},
+			retry.Attempts(6),
+			retry.Delay(100*time.Millisecond),
+		)
+
+		err = st.storage.LabelAssociations.AddAssociation(jid, labelID)
+		if err != nil {
+			st.log.Errorf("Error adding label association for JID %v and label %v: %v", jid, labelID, err)
+			return
+		}
+		st.log.Debugf("Added label association for JID %v and label %v", jid, labelID)
+	} else {
+		err := st.storage.LabelAssociations.RemoveAssociation(jid, labelID)
+		if err != nil {
+			st.log.Errorf("Error removing label association for JID %v and label %v: %v", jid, labelID, err)
+			return
+		}
+		st.log.Debugf("Removed label association for JID %v and label %v", jid, labelID)
+	}
+}
+
+func (st *StorageEventHandler) handleContact(contact *events.Contact) {
+	st.handleContactLidJidMapping(contact)
+}
+
+func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contact) {
+	ctx := st.gows.Context
+	cli := st.gows.Client
+
+	// Save lid to jid mapping
+	if cli.Store.LIDs == nil {
+		return
+	}
+
+	var err error
+	var lid = types.EmptyJID
+	var jid = types.EmptyJID
+
+	switch contact.JID.Server {
+	// jid => lid
+	case types.DefaultUserServer:
+		jid = contact.JID
+		act := contact.Action
+		if act.LidJID != nil && *act.LidJID != "" {
+			lid, err = types.ParseJID(*act.LidJID)
+			if err != nil {
+				st.log.Errorf("Failed to parse LID JID: %v", err)
+				return
+			}
+		}
+
+	// lid => jid
+	case types.HiddenUserServer:
+		lid = contact.JID
+		act := contact.Action
+		if act.PnJID != nil && *act.PnJID != "" {
+			jid, err = types.ParseJID(*act.PnJID)
+			if err != nil {
+				st.log.Errorf("Failed to parse PN JID: %v", err)
+				return
+			}
+		}
+	}
+
+	// Save lid to jid mapping
+	if lid == types.EmptyJID || jid == types.EmptyJID {
+		return
+	}
+	err = cli.Store.LIDs.PutLIDMapping(ctx, lid, jid)
+	if err != nil {
+		st.log.Errorf("Failed to update LID mapping (%v => %v): %v", lid, jid, err)
+		return
+	}
+}
