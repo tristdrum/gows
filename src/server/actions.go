@@ -183,7 +183,27 @@ func (s *Server) ClearChat(ctx context.Context, req *__.ClearChatRequest) (*__.E
 	); err != nil {
 		return nil, err
 	}
+	if _, err = clearLocalChatMessages(cli.Storage.Messages, jid, lastMessageTimestamp, time.Now); err != nil {
+		return nil, err
+	}
 	return &__.Empty{}, nil
+}
+
+func clearLocalChatMessages(
+	messages storage.MessageStorage,
+	jid types.JID,
+	lastMessageTimestamp time.Time,
+	now func() time.Time,
+) (time.Time, error) {
+	if messages == nil {
+		return time.Time{}, nil
+	}
+	deleteBefore := lastMessageTimestamp
+	if deleteBefore.IsZero() {
+		deleteBefore = now()
+	}
+	deleteBefore = deleteBefore.Add(time.Second)
+	return deleteBefore, messages.DeleteChatMessages(jid, deleteBefore)
 }
 
 func lastMessageForChatAppState(
