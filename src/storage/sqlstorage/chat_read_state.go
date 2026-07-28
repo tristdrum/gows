@@ -27,12 +27,12 @@ func (s SqlChatReadStateStore) UpsertChatReadState(state *storage.StoredChatRead
 	return s.upsertChatReadState(state)
 }
 
-func (s SqlChatReadStateStore) HasAnyChatReadState() (bool, error) {
+func (s SqlChatReadStateStore) HasAnyKnownChatReadState() (bool, error) {
 	var hasEvidence bool
 	err := s.db.GetContext(
 		context.Background(),
 		&hasEvidence,
-		"SELECT EXISTS (SELECT 1 FROM gows_chat_read_state LIMIT 1)",
+		"SELECT EXISTS (SELECT 1 FROM gows_chat_read_state WHERE unread_state_known = TRUE LIMIT 1)",
 	)
 	return hasEvidence, err
 }

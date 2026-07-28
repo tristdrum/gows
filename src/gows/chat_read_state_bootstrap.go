@@ -8,7 +8,7 @@ import (
 )
 
 type chatReadStateEvidenceStorage interface {
-	HasAnyChatReadState() (bool, error)
+	HasAnyKnownChatReadState() (bool, error)
 }
 
 type appStateSnapshotFetcher interface {
@@ -24,7 +24,7 @@ func bootstrapChatReadState(
 	if !ok {
 		return false, nil
 	}
-	hasEvidence, err := evidence.HasAnyChatReadState()
+	hasEvidence, err := evidence.HasAnyKnownChatReadState()
 	if err != nil || hasEvidence {
 		return false, err
 	}

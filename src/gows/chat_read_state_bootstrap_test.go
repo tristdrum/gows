@@ -31,7 +31,7 @@ func (s *bootstrapReadStateStorage) GetChatReadStates([]types.JID, bool) (map[st
 
 func (s *bootstrapReadStateStorage) DeleteChatReadState(types.JID) error { return nil }
 
-func (s *bootstrapReadStateStorage) HasAnyChatReadState() (bool, error) {
+func (s *bootstrapReadStateStorage) HasAnyKnownChatReadState() (bool, error) {
 	return s.hasEvidence, s.err
 }
 

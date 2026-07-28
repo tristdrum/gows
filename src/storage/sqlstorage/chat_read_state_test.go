@@ -417,16 +417,28 @@ func TestChatReadStateMergesNewerUnknownLIDMarkerWithPhoneBaseline(t *testing.T)
 	assert.Equal(t, t0.Add(time.Minute), state.EvidenceTimestamp)
 }
 
-func TestChatReadStateReportsWhetherAnyEvidenceExists(t *testing.T) {
+func TestChatReadStateReportsWhetherAnyKnownEvidenceExists(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
 
-	hasEvidence, err := states.HasAnyChatReadState()
+	hasEvidence, err := states.HasAnyKnownChatReadState()
 	require.NoError(t, err)
 	assert.False(t, hasEvidence)
 
 	_, err = states.UpsertChatReadState(&storage.StoredChatReadState{
-		Jid:                 types.NewJID("27820000001", types.DefaultUserServer),
+		Jid:               types.NewJID("27820000001", types.DefaultUserServer),
+		MarkedAsUnread:    true,
+		UnreadStateKnown:  false,
+		EvidenceTimestamp: time.Unix(9, 0),
+	})
+	require.NoError(t, err)
+
+	hasEvidence, err = states.HasAnyKnownChatReadState()
+	require.NoError(t, err)
+	assert.False(t, hasEvidence)
+
+	_, err = states.UpsertChatReadState(&storage.StoredChatReadState{
+		Jid:                 types.NewJID("27820000002", types.DefaultUserServer),
 		BaselineUnreadCount: 0,
 		UnreadStateKnown:    true,
 		CountFrom:           time.Unix(10, 0),
@@ -434,7 +446,7 @@ func TestChatReadStateReportsWhetherAnyEvidenceExists(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	hasEvidence, err = states.HasAnyChatReadState()
+	hasEvidence, err = states.HasAnyKnownChatReadState()
 	require.NoError(t, err)
 	assert.True(t, hasEvidence)
 }
