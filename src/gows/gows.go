@@ -59,7 +59,7 @@ func (gows *GoWS) reissueEvent(event interface{}) {
 			if err != nil {
 				gows.Log.Errorf("Failed to bootstrap chat read state from app state: %v", err)
 			} else if fetched {
-				gows.Log.Infof("Bootstrapped chat read state from regular_high app state")
+				gows.Log.Infof("Bootstrapped chat read state from regular_low app state")
 			}
 		})
 

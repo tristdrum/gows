@@ -30,7 +30,7 @@ func bootstrapChatReadState(
 	}
 	if err := fetcher.FetchAppState(
 		ctx,
-		appstate.WAPatchRegularHigh,
+		appstate.WAPatchRegularLow,
 		true,
 		false,
 	); err != nil {

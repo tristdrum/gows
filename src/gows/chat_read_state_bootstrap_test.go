@@ -56,7 +56,7 @@ func (f *bootstrapAppStateFetcher) FetchAppState(
 	return f.err
 }
 
-func TestBootstrapChatReadStateFetchesRegularHighSnapshotWhenEvidenceIsEmpty(t *testing.T) {
+func TestBootstrapChatReadStateFetchesRegularLowSnapshotWhenEvidenceIsEmpty(t *testing.T) {
 	states := &bootstrapReadStateStorage{}
 	fetcher := &bootstrapAppStateFetcher{}
 
@@ -65,7 +65,7 @@ func TestBootstrapChatReadStateFetchesRegularHighSnapshotWhenEvidenceIsEmpty(t *
 	require.NoError(t, err)
 	assert.True(t, fetched)
 	assert.Equal(t, 1, fetcher.calls)
-	assert.Equal(t, appstate.WAPatchRegularHigh, fetcher.name)
+	assert.Equal(t, appstate.WAPatchRegularLow, fetcher.name)
 	assert.True(t, fetcher.fullSync)
 	assert.False(t, fetcher.onlyIfNotSynced)
 }
