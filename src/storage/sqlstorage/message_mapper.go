@@ -22,6 +22,8 @@ type MessageMapper struct {
 
 var messageMapper = &MessageMapper{}
 
+var persistedProtoJSONUnmarshaler = protojson.UnmarshalOptions{DiscardUnknown: true}
+
 var _ Mapper[storage.StoredMessage] = (*MessageMapper)(nil)
 
 func (f *MessageMapper) ToFields(entity *storage.StoredMessage) map[string]interface{} {
@@ -145,7 +147,7 @@ func (f *MessageMapper) Unmarshal(data []byte, msg *storage.StoredMessage) error
 		if msg.Message.Message == nil {
 			msg.Message.Message = &waProto.Message{}
 		}
-		if err := protojson.Unmarshal(temp.Message, msg.Message.Message); err != nil {
+		if err := persistedProtoJSONUnmarshaler.Unmarshal(temp.Message, msg.Message.Message); err != nil {
 			return err
 		}
 	}
@@ -155,7 +157,7 @@ func (f *MessageMapper) Unmarshal(data []byte, msg *storage.StoredMessage) error
 		if msg.RawMessage == nil {
 			msg.RawMessage = &waProto.Message{}
 		}
-		if err := protojson.Unmarshal(temp.RawMessage, msg.RawMessage); err != nil {
+		if err := persistedProtoJSONUnmarshaler.Unmarshal(temp.RawMessage, msg.RawMessage); err != nil {
 			return err
 		}
 	}
@@ -165,7 +167,7 @@ func (f *MessageMapper) Unmarshal(data []byte, msg *storage.StoredMessage) error
 		if msg.SourceWebMsg == nil {
 			msg.SourceWebMsg = &waProto.WebMessageInfo{}
 		}
-		if err := protojson.Unmarshal(temp.SourceWebMsg, msg.SourceWebMsg); err != nil {
+		if err := persistedProtoJSONUnmarshaler.Unmarshal(temp.SourceWebMsg, msg.SourceWebMsg); err != nil {
 			return err
 		}
 	}
