@@ -61,6 +61,30 @@ func (gows *GoWS) reissueEvent(event interface{}) {
 			} else if fetched {
 				gows.Log.Infof("Bootstrapped chat read state from regular_low app state")
 			}
+
+			result, err := backfillUnknownChatReadStates(
+				gows.Context,
+				gows.Storage.Messages,
+				gows.Storage.ChatReadState,
+				func(ctx context.Context, info *types.MessageInfo) error {
+					_, err := gows.SendPeerMessage(
+						ctx,
+						gows.BuildHistorySyncRequest(info, 1),
+					)
+					return err
+				},
+				waitForChatReadStateBackfill,
+			)
+			if err != nil {
+				gows.Log.Errorf("Failed to backfill unknown chat read state: %v", err)
+			} else if result.Requested > 0 || result.Failed > 0 {
+				gows.Log.Infof(
+					"Requested on-demand read-state history for %d chats (%d failed, %d eligible)",
+					result.Requested,
+					result.Failed,
+					result.Eligible,
+				)
+			}
 		})
 
 	case *events.Message:
