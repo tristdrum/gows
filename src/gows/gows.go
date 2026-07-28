@@ -3,6 +3,7 @@ package gows
 import (
 	"context"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/devlikeapro/gows/storage"
@@ -23,11 +24,12 @@ type GoWS struct {
 	Context context.Context
 	Storage *storage.Storage
 
-	events              chan interface{}
-	cancelContext       context.CancelFunc
-	container           *sqlstorage.GContainer
-	storageEventHandler *StorageEventHandler
-	eventHandlerID      uint32
+	events                 chan interface{}
+	cancelContext          context.CancelFunc
+	container              *sqlstorage.GContainer
+	storageEventHandler    *StorageEventHandler
+	eventHandlerID         uint32
+	chatReadStateBootstrap sync.Once
 }
 
 func (gows *GoWS) reissueEvent(event interface{}) {
@@ -48,6 +50,18 @@ func (gows *GoWS) reissueEvent(event interface{}) {
 			LID:      &gows.Store.LID,
 			PushName: gows.Store.PushName,
 		}
+		go gows.chatReadStateBootstrap.Do(func() {
+			fetched, err := bootstrapChatReadState(
+				gows.Context,
+				gows.Storage.ChatReadState,
+				gows.Client,
+			)
+			if err != nil {
+				gows.Log.Errorf("Failed to bootstrap chat read state from app state: %v", err)
+			} else if fetched {
+				gows.Log.Infof("Bootstrapped chat read state from regular_high app state")
+			}
+		})
 
 	case *events.Message:
 		data = event
@@ -174,6 +188,7 @@ func BuildSession(
 		container,
 		nil,
 		0,
+		sync.Once{},
 	}
 	if storageCfg == (StorageConfig{}) {
 		storageCfg = DefaultStorageConfig()

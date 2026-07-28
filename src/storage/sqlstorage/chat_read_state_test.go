@@ -417,6 +417,28 @@ func TestChatReadStateMergesNewerUnknownLIDMarkerWithPhoneBaseline(t *testing.T)
 	assert.Equal(t, t0.Add(time.Minute), state.EvidenceTimestamp)
 }
 
+func TestChatReadStateReportsWhetherAnyEvidenceExists(t *testing.T) {
+	container := newReadStateTestContainer(t)
+	states := container.NewChatReadStateStorage()
+
+	hasEvidence, err := states.HasAnyChatReadState()
+	require.NoError(t, err)
+	assert.False(t, hasEvidence)
+
+	_, err = states.UpsertChatReadState(&storage.StoredChatReadState{
+		Jid:                 types.NewJID("27820000001", types.DefaultUserServer),
+		BaselineUnreadCount: 0,
+		UnreadStateKnown:    true,
+		CountFrom:           time.Unix(10, 0),
+		EvidenceTimestamp:   time.Unix(11, 0),
+	})
+	require.NoError(t, err)
+
+	hasEvidence, err = states.HasAnyChatReadState()
+	require.NoError(t, err)
+	assert.True(t, hasEvidence)
+}
+
 func TestReadEventFailsClosedForUncoveredConcurrentSameSecondLIDMessage(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()

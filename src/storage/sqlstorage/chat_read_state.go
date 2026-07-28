@@ -27,6 +27,16 @@ func (s SqlChatReadStateStore) UpsertChatReadState(state *storage.StoredChatRead
 	return s.upsertChatReadState(state)
 }
 
+func (s SqlChatReadStateStore) HasAnyChatReadState() (bool, error) {
+	var hasEvidence bool
+	err := s.db.GetContext(
+		context.Background(),
+		&hasEvidence,
+		"SELECT EXISTS (SELECT 1 FROM gows_chat_read_state LIMIT 1)",
+	)
+	return hasEvidence, err
+}
+
 func (s SqlChatReadStateStore) upsertChatReadState(state *storage.StoredChatReadState) (bool, error) {
 	canonical, err := canonicalizeJID(s.db, state.Jid)
 	if err != nil {
