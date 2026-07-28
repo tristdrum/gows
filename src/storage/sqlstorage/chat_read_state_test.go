@@ -50,7 +50,7 @@ func storeTestMessage(
 	}))
 }
 
-func TestChatReadStateAddsDeduplicatedInboundMessagesAfterHistoryBaseline(t *testing.T) {
+func TestHistoryBoundaryFailsClosedForUncoveredSameSecondInbound(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
 	messages := container.NewMessageStorage()
@@ -82,7 +82,60 @@ func TestChatReadStateAddsDeduplicatedInboundMessagesAfterHistoryBaseline(t *tes
 	counts, err := messages.CountInboundMessagesAfter(loaded, true)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), loaded[jid.String()].BaselineUnreadCount)
-	assert.Equal(t, uint64(2), counts[jid.String()])
+	_, exact := counts[jid.String()]
+	assert.False(t, exact)
+}
+
+func TestKnownBoundaryCountsStrictlyLaterInboundMessagesExactly(t *testing.T) {
+	container := newReadStateTestContainer(t)
+	states := container.NewChatReadStateStorage()
+	messages := container.NewMessageStorage()
+	jid := testJID("15551230000", types.DefaultUserServer)
+	baseline := time.Unix(1_700_000_000, 0)
+	_, err := states.UpsertChatReadState(&storage.StoredChatReadState{
+		Jid:               jid,
+		UnreadStateKnown:  true,
+		CountFrom:         baseline,
+		CoveredMessageIDs: []string{"covered-at-boundary"},
+		EvidenceTimestamp: baseline,
+	})
+	require.NoError(t, err)
+	storeTestMessage(t, messages, "covered-at-boundary", jid, baseline, false)
+	storeTestMessage(t, messages, "strictly-later", jid, baseline.Add(time.Second), false)
+	storeTestMessage(t, messages, "strictly-later", jid, baseline.Add(time.Second), false)
+
+	loaded, err := states.GetChatReadStates([]types.JID{jid}, true)
+	require.NoError(t, err)
+	counts, err := messages.CountInboundMessagesAfter(loaded, true)
+	require.NoError(t, err)
+	count, exact := counts[jid.String()]
+	assert.True(t, exact)
+	assert.Equal(t, uint64(1), count)
+}
+
+func TestKnownBoundaryReturnsExactZeroEntry(t *testing.T) {
+	container := newReadStateTestContainer(t)
+	states := container.NewChatReadStateStorage()
+	messages := container.NewMessageStorage()
+	jid := testJID("15551230001", types.DefaultUserServer)
+	baseline := time.Unix(1_700_000_000, 0)
+	_, err := states.UpsertChatReadState(&storage.StoredChatReadState{
+		Jid:               jid,
+		UnreadStateKnown:  true,
+		CountFrom:         baseline,
+		CoveredMessageIDs: []string{"covered-at-boundary"},
+		EvidenceTimestamp: baseline,
+	})
+	require.NoError(t, err)
+	storeTestMessage(t, messages, "covered-at-boundary", jid, baseline, false)
+
+	loaded, err := states.GetChatReadStates([]types.JID{jid}, true)
+	require.NoError(t, err)
+	counts, err := messages.CountInboundMessagesAfter(loaded, true)
+	require.NoError(t, err)
+	count, exact := counts[jid.String()]
+	assert.True(t, exact)
+	assert.Zero(t, count)
 }
 
 func TestChatReadEventsAreTimestampOrderedAndUnreadPreservesCountWatermark(t *testing.T) {
@@ -142,11 +195,12 @@ func TestChatReadEventsAreTimestampOrderedAndUnreadPreservesCountWatermark(t *te
 	assert.True(t, state.MarkedAsUnread)
 	assert.True(t, state.UnreadStateKnown)
 	assert.Equal(t, readWatermark, state.CountFrom)
-	assert.Equal(t, []string{"other-covered-at-read", "read-boundary"}, state.CoveredMessageIDs)
+	assert.Equal(t, []string{"read-boundary"}, state.CoveredMessageIDs)
 	assert.Equal(t, t0.Add(30*time.Second), state.EvidenceTimestamp)
 	counts, err := messages.CountInboundMessagesAfter(loaded, true)
 	require.NoError(t, err)
-	assert.Equal(t, uint64(1), counts[jid.String()])
+	_, exact := counts[jid.String()]
+	assert.False(t, exact)
 }
 
 func TestUnreadEventWithoutBaselineKeepsNumericCountUnknown(t *testing.T) {
@@ -254,7 +308,6 @@ func TestOlderHistoryBaselineCompletesNewerUnknownUnreadMarker(t *testing.T) {
 func TestRepeatedHistoryAtSameBoundaryRefreshesCoveredMessageIDs(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
-	messages := container.NewMessageStorage()
 	jid := testJID("15550005555", types.DefaultUserServer)
 	boundary := time.Unix(1_700_000_400, 0)
 	state := &storage.StoredChatReadState{
@@ -262,12 +315,12 @@ func TestRepeatedHistoryAtSameBoundaryRefreshesCoveredMessageIDs(t *testing.T) {
 		BaselineUnreadCount: 2,
 		UnreadStateKnown:    true,
 		CountFrom:           boundary,
+		CoveredMessageIDs:   []string{"history-first"},
 		EvidenceTimestamp:   boundary,
 	}
-	storeTestMessage(t, messages, "history-first", jid, boundary, false)
 	_, err := states.UpsertChatReadState(state)
 	require.NoError(t, err)
-	storeTestMessage(t, messages, "history-second", jid, boundary, false)
+	state.CoveredMessageIDs = []string{"history-first", "history-second"}
 	_, err = states.UpsertChatReadState(state)
 	require.NoError(t, err)
 
@@ -364,7 +417,7 @@ func TestChatReadStateMergesNewerUnknownLIDMarkerWithPhoneBaseline(t *testing.T)
 	assert.Equal(t, t0.Add(time.Minute), state.EvidenceTimestamp)
 }
 
-func TestReadEventSnapshotsSameSecondMessagesAcrossPhoneAndLID(t *testing.T) {
+func TestReadEventFailsClosedForUncoveredConcurrentSameSecondLIDMessage(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
 	messages := container.NewMessageStorage()
@@ -390,8 +443,9 @@ func TestReadEventSnapshotsSameSecondMessagesAcrossPhoneAndLID(t *testing.T) {
 	require.NoError(t, err)
 	state := loaded[pn.String()]
 	require.NotNil(t, state)
-	assert.Equal(t, []string{"covered-lid", "covered-pn"}, state.CoveredMessageIDs)
+	assert.Equal(t, []string{"covered-pn"}, state.CoveredMessageIDs)
 	counts, err := messages.CountInboundMessagesAfter(loaded, true)
 	require.NoError(t, err)
-	assert.Equal(t, uint64(1), counts[pn.String()])
+	_, exact := counts[pn.String()]
+	assert.False(t, exact)
 }

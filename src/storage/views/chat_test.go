@@ -77,10 +77,12 @@ func (s *chatViewReadStateStorage) DeleteChatReadState(types.JID) error { return
 func TestChatViewExposesKnownAndUnknownUnreadState(t *testing.T) {
 	knownJID := types.JID{User: "15551234567", Server: types.DefaultUserServer}
 	unknownJID := types.JID{User: "15557654321", Server: types.DefaultUserServer}
+	ambiguousJID := types.JID{User: "15550009999", Server: types.DefaultUserServer}
 	messages := &chatViewMessageStorage{
 		lastMessages: []*storage.StoredMessage{
 			{Message: &events.Message{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: knownJID}, Timestamp: time.Unix(20, 0)}}},
 			{Message: &events.Message{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: unknownJID}, Timestamp: time.Unix(10, 0)}}},
+			{Message: &events.Message{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: ambiguousJID}, Timestamp: time.Unix(5, 0)}}},
 		},
 		counts: map[string]uint64{knownJID.String(): 2},
 	}
@@ -96,16 +98,23 @@ func TestChatViewExposesKnownAndUnknownUnreadState(t *testing.T) {
 			MarkedAsUnread:   true,
 			UnreadStateKnown: false,
 		},
+		ambiguousJID.String(): {
+			Jid:                 ambiguousJID,
+			BaselineUnreadCount: 4,
+			UnreadStateKnown:    true,
+		},
 	}}
 	view := NewChatView(messages, chatViewContactStorage{}, chatViewGroupStorage{}, states)
 
 	chats, err := view.GetChats(storage.ChatFilter{}, storage.Sort{Field: "timestamp", Order: storage.SortDesc}, storage.Pagination{}, true)
 	require.NoError(t, err)
-	require.Len(t, chats, 2)
+	require.Len(t, chats, 3)
 	assert.Equal(t, uint64(5), chats[0].UnreadCount)
 	assert.True(t, chats[0].MarkedAsUnread)
 	assert.True(t, chats[0].UnreadStateKnown)
 	assert.Zero(t, chats[1].UnreadCount)
 	assert.True(t, chats[1].MarkedAsUnread)
 	assert.False(t, chats[1].UnreadStateKnown)
+	assert.Zero(t, chats[2].UnreadCount)
+	assert.False(t, chats[2].UnreadStateKnown)
 }

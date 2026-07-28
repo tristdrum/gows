@@ -128,6 +128,8 @@ func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.St
 	}
 
 	aliasesToCanonical := make(map[string]string)
+	stateByCanonical := make(map[string]*storage.StoredChatReadState)
+	coveredByCanonical := make(map[string]map[string]struct{})
 	conditions := make(sq.Or, 0, len(states))
 	for _, state := range states {
 		if state == nil || !state.UnreadStateKnown {
@@ -149,22 +151,30 @@ func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.St
 			}
 			aliases = append(aliases, lids...)
 		}
+		canonicalKey := canonical.String()
+		if _, exists := stateByCanonical[canonicalKey]; exists {
+			continue
+		}
+		stateByCanonical[canonicalKey] = state
+		counts[canonicalKey] = 0
+		covered := make(map[string]struct{}, len(state.CoveredMessageIDs))
+		for _, id := range storage.NormalizeCoveredMessageIDs(state.CoveredMessageIDs) {
+			covered[id] = struct{}{}
+		}
+		coveredByCanonical[canonicalKey] = covered
 		for _, alias := range aliases {
-			aliasesToCanonical[alias] = canonical.String()
+			aliasesToCanonical[alias] = canonicalKey
 		}
-		boundaryCondition := sq.Or{sq.Gt{"timestamp": state.CountFrom}}
-		atBoundary := sq.And{sq.Eq{"timestamp": state.CountFrom}}
-		if covered := storage.NormalizeCoveredMessageIDs(state.CoveredMessageIDs); len(covered) > 0 {
-			atBoundary = append(atBoundary, sq.NotEq{"id": covered})
-		}
-		boundaryCondition = append(boundaryCondition, atBoundary)
-		conditions = append(conditions, sq.And{sq.Eq{"jid": aliases}, boundaryCondition})
+		conditions = append(conditions, sq.And{
+			sq.Eq{"jid": aliases},
+			sq.GtOrEq{"timestamp": state.CountFrom},
+		})
 	}
 	if len(conditions) == 0 {
 		return counts, nil
 	}
 
-	query, args, err := sq.Select("id", "jid").
+	query, args, err := sq.Select("id", "jid", "timestamp").
 		From(s.table.Name).
 		Where(sq.Eq{"from_me": false, "is_real": true}).
 		Where(conditions).
@@ -178,16 +188,36 @@ func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.St
 	}
 	defer rows.Close()
 	seen := make(map[string]struct{})
+	ambiguous := make(map[string]struct{})
 	for rows.Next() {
 		var id, rawJID string
-		if err := rows.Scan(&id, &rawJID); err != nil {
+		var timestamp time.Time
+		if err := rows.Scan(&id, &rawJID, &timestamp); err != nil {
 			return nil, err
 		}
 		if _, duplicate := seen[id]; duplicate {
 			continue
 		}
 		seen[id] = struct{}{}
-		if canonical, ok := aliasesToCanonical[rawJID]; ok {
+		canonical, ok := aliasesToCanonical[rawJID]
+		if !ok {
+			continue
+		}
+		if _, isAmbiguous := ambiguous[canonical]; isAmbiguous {
+			continue
+		}
+		state := stateByCanonical[canonical]
+		switch {
+		case timestamp.Equal(state.CountFrom):
+			if _, covered := coveredByCanonical[canonical][id]; covered {
+				continue
+			}
+			// Provider timestamps are only second-granular. An uncovered message at
+			// the exact read/history boundary cannot be ordered relative to that
+			// evidence, so withhold the numeric result instead of guessing.
+			ambiguous[canonical] = struct{}{}
+			delete(counts, canonical)
+		case timestamp.After(state.CountFrom):
 			counts[canonical]++
 		}
 	}

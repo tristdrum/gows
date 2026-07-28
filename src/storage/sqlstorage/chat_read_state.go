@@ -24,22 +24,15 @@ func (gc *GContainer) NewChatReadStateStorage() *SqlChatReadStateStore {
 }
 
 func (s SqlChatReadStateStore) UpsertChatReadState(state *storage.StoredChatReadState) (bool, error) {
-	return s.upsertChatReadState(state, true)
+	return s.upsertChatReadState(state)
 }
 
-func (s SqlChatReadStateStore) upsertChatReadState(state *storage.StoredChatReadState, snapshotBoundary bool) (bool, error) {
+func (s SqlChatReadStateStore) upsertChatReadState(state *storage.StoredChatReadState) (bool, error) {
 	canonical, err := canonicalizeJID(s.db, state.Jid)
 	if err != nil {
 		return false, err
 	}
 	coveredIDs := storage.NormalizeCoveredMessageIDs(state.CoveredMessageIDs)
-	if snapshotBoundary && state.UnreadStateKnown {
-		storedIDs, err := s.storedMessageIDsAtBoundary(canonical, state.CountFrom)
-		if err != nil {
-			return false, err
-		}
-		coveredIDs = storage.NormalizeCoveredMessageIDs(append(coveredIDs, storedIDs...))
-	}
 	var baselineUnreadCount any
 	var countFromTimestamp any
 	if state.UnreadStateKnown {
@@ -132,7 +125,7 @@ func (s SqlChatReadStateStore) ApplyChatReadEvent(event storage.ChatReadEvent) (
 			CountFrom:           event.MessageWatermark,
 			CoveredMessageIDs:   event.CoveredMessageIDs,
 			EvidenceTimestamp:   event.Timestamp,
-		}, true)
+		})
 	}
 
 	if state == nil {
@@ -145,28 +138,7 @@ func (s SqlChatReadStateStore) ApplyChatReadEvent(event storage.ChatReadEvent) (
 	state.Jid = canonical
 	state.MarkedAsUnread = true
 	state.EvidenceTimestamp = event.Timestamp
-	return s.upsertChatReadState(state, false)
-}
-
-func (s SqlChatReadStateStore) storedMessageIDsAtBoundary(jid types.JID, watermark time.Time) ([]string, error) {
-	aliases := []string{jid.String()}
-	lids, err := reverseLookupLIDs(s.db, jid.User)
-	if err != nil {
-		return nil, err
-	}
-	aliases = append(aliases, lids...)
-	query, args, err := sq.Select("id").
-		From(MessageTable.Name).
-		Where(sq.Eq{"jid": aliases, "is_real": true, "timestamp": watermark}).
-		ToSql()
-	if err != nil {
-		return nil, err
-	}
-	var ids []string
-	if err := s.db.Select(&ids, query, args...); err != nil {
-		return nil, err
-	}
-	return storage.NormalizeCoveredMessageIDs(ids), nil
+	return s.upsertChatReadState(state)
 }
 
 func rowsWereChanged(result sql.Result) (bool, error) {

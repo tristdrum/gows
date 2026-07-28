@@ -83,9 +83,10 @@ func (s ChatView) GetChats(filter storage.ChatFilter, sortBy storage.Sort, pagin
 		}
 		if state := readStates[msg.Info.Chat.String()]; state != nil {
 			chat.MarkedAsUnread = state.MarkedAsUnread
-			chat.UnreadStateKnown = state.UnreadStateKnown
-			if state.UnreadStateKnown {
-				chat.UnreadCount = state.BaselineUnreadCount + inboundCounts[msg.Info.Chat.String()]
+			delta, exact := inboundCounts[msg.Info.Chat.String()]
+			chat.UnreadStateKnown = state.UnreadStateKnown && exact
+			if chat.UnreadStateKnown {
+				chat.UnreadCount = state.BaselineUnreadCount + delta
 			}
 		}
 		chats[i] = chat

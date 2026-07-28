@@ -30,6 +30,9 @@ type MessageStorage interface {
 	GetMessageWithRetries(id types.MessageID) (*StoredMessage, error)
 	DeleteChatMessages(jid types.JID, deleteBefore time.Time) error
 	DeleteMessage(id types.MessageID) error
+	// CountInboundMessagesAfter returns exact post-watermark counts. A missing
+	// map entry means the numeric count is unavailable or boundary-ambiguous;
+	// a present zero means the count is authoritatively zero.
 	CountInboundMessagesAfter(states map[string]*StoredChatReadState, merge bool) (map[string]uint64, error)
 }
 
