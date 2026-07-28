@@ -11,6 +11,7 @@ import (
 func BuildStorage(container *sqlstorage.GContainer, gows *GoWS, cfg StorageConfig) *storage.Storage {
 	st := &storage.Storage{}
 	st.ChatEphemeralSetting = container.NewChatEphemeralSettingStorage()
+	st.ChatReadState = container.NewChatReadStateStorage()
 	st.Contacts = meowstorage.NewContactStorage(gows.Store)
 
 	if cfg.Messages {
@@ -27,7 +28,7 @@ func BuildStorage(container *sqlstorage.GContainer, gows *GoWS, cfg StorageConfi
 	}
 
 	if cfg.Chats {
-		st.Chats = views.NewChatView(st.Messages, st.Contacts, st.Groups)
+		st.Chats = views.NewChatView(st.Messages, st.Contacts, st.Groups, st.ChatReadState)
 	} else {
 		st.Chats = noop.NewChatStorage()
 	}

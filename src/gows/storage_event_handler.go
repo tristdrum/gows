@@ -144,6 +144,12 @@ func (st *StorageEventHandler) handleEvent(event interface{}) {
 		st.handleReceipt(receipt)
 	case *events.HistorySync:
 		st.handleHistorySync(event.(*events.HistorySync))
+	case *events.MarkChatAsRead:
+		markRead := event.(*events.MarkChatAsRead)
+		if st.shouldIgnoreJID(markRead.JID) {
+			return
+		}
+		st.handleMarkChatAsRead(markRead)
 	// Groups
 	case *events.JoinedGroup:
 		group := event.(*events.JoinedGroup)
@@ -295,6 +301,19 @@ func (st *StorageEventHandler) handleHistorySync(event *events.HistorySync) {
 	st.log.Debugf("Saved history for %v chats", len(event.Data.Conversations))
 }
 
+func (st *StorageEventHandler) handleMarkChatAsRead(event *events.MarkChatAsRead) {
+	if st.storage.ChatReadState == nil {
+		return
+	}
+	readEvent, ok := chatReadEventFromEvent(event)
+	if !ok {
+		return
+	}
+	if _, err := st.storage.ChatReadState.ApplyChatReadEvent(readEvent); err != nil {
+		st.log.Errorf("Error storing chat read state for %v: %v", event.JID, err)
+	}
+}
+
 func (st *StorageEventHandler) saveHistoryForOneChat(conv *waHistorySync.Conversation, chatJID types.JID) {
 	historyMessages := conv.GetMessages()
 	for _, historyMsg := range historyMessages {
@@ -321,6 +340,14 @@ func (st *StorageEventHandler) saveHistoryForOneChat(conv *waHistorySync.Convers
 			st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
 		}
 		st.log.Debugf("Initial chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
+	}
+
+	if st.storage.ChatReadState != nil {
+		if readState, ok := chatReadStateFromConversation(conv, chatJID); ok {
+			if _, err := st.storage.ChatReadState.UpsertChatReadState(readState); err != nil {
+				st.log.Errorf("Error storing history chat read state for %v: %v", chatJID, err)
+			}
+		}
 	}
 }
 
@@ -365,6 +392,11 @@ func (st *StorageEventHandler) handleDeleteChat(event *events.DeleteChat) {
 	err = st.storage.ChatEphemeralSetting.DeleteChatEphemeralSetting(event.JID, event.Timestamp)
 	if err != nil {
 		st.log.Errorf("Error deleting chat ephemeral setting %v: %v", event.JID, err)
+	}
+	if st.storage.ChatReadState != nil {
+		if err := st.storage.ChatReadState.DeleteChatReadState(event.JID); err != nil {
+			st.log.Errorf("Error deleting chat read state %v: %v", event.JID, err)
+		}
 	}
 	st.log.Debugf("Deleted chat %v", event.JID)
 }

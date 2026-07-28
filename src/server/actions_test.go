@@ -47,6 +47,10 @@ func (s *recordingMessageStorage) DeleteMessage(types.MessageID) error {
 	return nil
 }
 
+func (s *recordingMessageStorage) CountInboundMessagesAfter(map[string]*storage.StoredChatReadState, bool) (map[string]uint64, error) {
+	return map[string]uint64{}, nil
+}
+
 func TestClearLocalChatMessagesDeletesThroughLastKnownMessage(t *testing.T) {
 	jid, err := types.ParseJID("123456789-123456@g.us")
 	if err != nil {

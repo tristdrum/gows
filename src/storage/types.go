@@ -36,6 +36,30 @@ type StoredChat struct {
 	Jid                   types.JID
 	Name                  string
 	ConversationTimestamp time.Time
+	UnreadCount           uint64
+	MarkedAsUnread        bool
+	UnreadStateKnown      bool
+}
+
+// StoredChatReadState is the durable authoritative baseline used to derive a
+// chat's current unread count from subsequently stored inbound messages.
+type StoredChatReadState struct {
+	Jid                 types.JID
+	BaselineUnreadCount uint64
+	MarkedAsUnread      bool
+	UnreadStateKnown    bool
+	CountFrom           time.Time
+	EvidenceTimestamp   time.Time
+}
+
+// ChatReadEvent is a timestamped cross-device read/unread action. Timestamp
+// orders competing state evidence, while MessageWatermark identifies the last
+// message covered when the chat is marked read.
+type ChatReadEvent struct {
+	Jid              types.JID
+	Timestamp        time.Time
+	Read             bool
+	MessageWatermark time.Time
 }
 
 type EphemeralSetting struct {

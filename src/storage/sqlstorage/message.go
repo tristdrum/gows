@@ -1,8 +1,6 @@
 package sqlstorage
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -121,6 +119,79 @@ func (s SqlMessageStore) DeleteChatMessages(jid types.JID, deleteBefore time.Tim
 
 func (s SqlMessageStore) DeleteMessage(id types.MessageID) error {
 	return s.DeleteById(id)
+}
+
+func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.StoredChatReadState, merge bool) (map[string]uint64, error) {
+	counts := make(map[string]uint64, len(states))
+	if len(states) == 0 {
+		return counts, nil
+	}
+
+	aliasesToCanonical := make(map[string]string)
+	conditions := make(sq.Or, 0, len(states))
+	for _, state := range states {
+		if state == nil || !state.UnreadStateKnown {
+			continue
+		}
+		canonical := state.Jid
+		var err error
+		if merge {
+			canonical, err = s.canonicalizeJID(state.Jid)
+			if err != nil {
+				return nil, err
+			}
+		}
+		aliases := []string{canonical.String()}
+		if merge {
+			lids, err := s.reverseLookupLIDs(canonical.User)
+			if err != nil {
+				return nil, err
+			}
+			aliases = append(aliases, lids...)
+		}
+		for _, alias := range aliases {
+			aliasesToCanonical[alias] = canonical.String()
+		}
+		conditions = append(conditions, sq.And{
+			sq.Eq{"jid": aliases},
+			sq.Gt{"timestamp": state.CountFrom},
+		})
+	}
+	if len(conditions) == 0 {
+		return counts, nil
+	}
+
+	query, args, err := sq.Select("id", "jid").
+		From(s.table.Name).
+		Where(sq.Eq{"from_me": false, "is_real": true}).
+		Where(conditions).
+		ToSql()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	for rows.Next() {
+		var id, rawJID string
+		if err := rows.Scan(&id, &rawJID); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if canonical, ok := aliasesToCanonical[rawJID]; ok {
+			counts[canonical]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
 }
 
 // getLastMessagesPostgresSubquery generates the subquery for PostgreSQL to fetch the ID of the last message per chat.
@@ -379,33 +450,7 @@ func (s SqlMessageStore) expandJIDsWithLIDs(jids []types.JID) ([]string, error) 
 }
 
 func (s SqlMessageStore) canonicalizeJID(jid types.JID) (types.JID, error) {
-	if jid.Server != types.HiddenUserServer {
-		return jid, nil
-	}
-	query := sq.Select("pn").
-		From("whatsmeow_lid_map").
-		Where(sq.Eq{"lid": jid.User}).
-		Limit(1)
-	sqlText, args, err := query.ToSql()
-	if err != nil {
-		return types.JID{}, err
-	}
-	var pn string
-	err = s.db.Get(&pn, sqlText, args...)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return jid, nil
-	case err != nil:
-		return types.JID{}, err
-	case pn == "":
-		return jid, nil
-	}
-	canonical := types.JID{
-		User:   pn,
-		Server: types.DefaultUserServer,
-		Device: jid.Device,
-	}
-	return canonical, nil
+	return canonicalizeJID(s.db, jid)
 }
 
 func (s SqlMessageStore) canonicalJIDStrings(jids []types.JID) ([]string, error) {
@@ -446,22 +491,7 @@ func (s SqlMessageStore) targetJIDStrings(jids []types.JID, merge bool) ([]strin
 // reverseLookupLIDs returns all "@lid" JID strings that map to the given phone number.
 // This enables building a WHERE jid IN (...) clause instead of a per-row correlated subquery.
 func (s SqlMessageStore) reverseLookupLIDs(pn string) ([]string, error) {
-	query, args, err := sq.Select("lid").
-		From("whatsmeow_lid_map").
-		Where(sq.Eq{"pn": pn}).
-		ToSql()
-	if err != nil {
-		return nil, err
-	}
-	var lids []string
-	if err := s.db.Select(&lids, query, args...); err != nil {
-		return nil, err
-	}
-	result := make([]string, 0, len(lids))
-	for _, lid := range lids {
-		result = append(result, lid+"@"+types.HiddenUserServer)
-	}
-	return result, nil
+	return reverseLookupLIDs(s.db, pn)
 }
 
 func (s SqlMessageStore) primaryJIDExpression(tableAlias string) (string, error) {

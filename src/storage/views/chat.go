@@ -6,18 +6,25 @@ import (
 )
 
 type ChatView struct {
-	Messages storage.MessageStorage
-	Contacts storage.ContactStorage
-	Groups   storage.GroupStorage
+	Messages   storage.MessageStorage
+	Contacts   storage.ContactStorage
+	Groups     storage.GroupStorage
+	ReadStates storage.ChatReadStateStorage
 }
 
 var _ storage.ChatStorage = (*ChatView)(nil)
 
-func NewChatView(message storage.MessageStorage, contacts storage.ContactStorage, groups storage.GroupStorage) *ChatView {
+func NewChatView(
+	message storage.MessageStorage,
+	contacts storage.ContactStorage,
+	groups storage.GroupStorage,
+	readStates storage.ChatReadStateStorage,
+) *ChatView {
 	return &ChatView{
-		Messages: message,
-		Contacts: contacts,
-		Groups:   groups,
+		Messages:   message,
+		Contacts:   contacts,
+		Groups:     groups,
+		ReadStates: readStates,
 	}
 }
 
@@ -28,6 +35,23 @@ func (s ChatView) GetChats(filter storage.ChatFilter, sortBy storage.Sort, pagin
 	messages, err := s.Messages.GetLastMessagesInChats(filter, sortBy, pagination, merge)
 	if err != nil {
 		return nil, err
+	}
+
+	readStates := make(map[string]*storage.StoredChatReadState)
+	inboundCounts := make(map[string]uint64)
+	if s.ReadStates != nil {
+		jids := make([]types.JID, 0, len(messages))
+		for _, msg := range messages {
+			jids = append(jids, msg.Info.Chat)
+		}
+		readStates, err = s.ReadStates.GetChatReadStates(jids, merge)
+		if err != nil {
+			return nil, err
+		}
+		inboundCounts, err = s.Messages.CountInboundMessagesAfter(readStates, merge)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// ignore Name for now, only show Jid and ConversationTimestamp
@@ -56,6 +80,13 @@ func (s ChatView) GetChats(filter storage.ChatFilter, sortBy storage.Sort, pagin
 			Jid:                   msg.Info.Chat,
 			ConversationTimestamp: msg.Info.Timestamp,
 			Name:                  name,
+		}
+		if state := readStates[msg.Info.Chat.String()]; state != nil {
+			chat.MarkedAsUnread = state.MarkedAsUnread
+			chat.UnreadStateKnown = state.UnreadStateKnown
+			if state.UnreadStateKnown {
+				chat.UnreadCount = state.BaselineUnreadCount + inboundCounts[msg.Info.Chat.String()]
+			}
 		}
 		chats[i] = chat
 	}

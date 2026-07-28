@@ -13,6 +13,7 @@ type Storage struct {
 	Chats                ChatStorage
 	Groups               GroupStorage
 	ChatEphemeralSetting ChatEphemeralSettingStorage
+	ChatReadState        ChatReadStateStorage
 	Labels               LabelStorage
 	LabelAssociations    LabelAssociationStorage
 	Lidmap               LidmapStorage
@@ -29,6 +30,7 @@ type MessageStorage interface {
 	GetMessageWithRetries(id types.MessageID) (*StoredMessage, error)
 	DeleteChatMessages(jid types.JID, deleteBefore time.Time) error
 	DeleteMessage(id types.MessageID) error
+	CountInboundMessagesAfter(states map[string]*StoredChatReadState, merge bool) (map[string]uint64, error)
 }
 
 type GroupStorage interface {
@@ -48,6 +50,13 @@ type ContactStorage interface {
 
 type ChatStorage interface {
 	GetChats(filter ChatFilter, sortBy Sort, pagination Pagination, merge bool) ([]*StoredChat, error)
+}
+
+type ChatReadStateStorage interface {
+	UpsertChatReadState(state *StoredChatReadState) (bool, error)
+	ApplyChatReadEvent(event ChatReadEvent) (bool, error)
+	GetChatReadStates(jids []types.JID, merge bool) (map[string]*StoredChatReadState, error)
+	DeleteChatReadState(jid types.JID) error
 }
 
 type ChatEphemeralSettingStorage interface {

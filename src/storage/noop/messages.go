@@ -46,3 +46,7 @@ func (s MessageStorage) DeleteChatMessages(jid types.JID, deleteBefore time.Time
 func (s MessageStorage) DeleteMessage(id types.MessageID) error {
 	return nil
 }
+
+func (s MessageStorage) CountInboundMessagesAfter(states map[string]*storage.StoredChatReadState, merge bool) (map[string]uint64, error) {
+	return map[string]uint64{}, nil
+}
