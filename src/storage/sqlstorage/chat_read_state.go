@@ -3,6 +3,7 @@ package sqlstorage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -23,7 +24,31 @@ func (gc *GContainer) NewChatReadStateStorage() *SqlChatReadStateStore {
 }
 
 func (s SqlChatReadStateStore) UpsertChatReadState(state *storage.StoredChatReadState) (bool, error) {
+	return s.upsertChatReadState(state, true)
+}
+
+func (s SqlChatReadStateStore) upsertChatReadState(state *storage.StoredChatReadState, snapshotBoundary bool) (bool, error) {
 	canonical, err := canonicalizeJID(s.db, state.Jid)
+	if err != nil {
+		return false, err
+	}
+	coveredIDs := storage.NormalizeCoveredMessageIDs(state.CoveredMessageIDs)
+	if snapshotBoundary && state.UnreadStateKnown {
+		storedIDs, err := s.storedMessageIDsAtBoundary(canonical, state.CountFrom)
+		if err != nil {
+			return false, err
+		}
+		coveredIDs = storage.NormalizeCoveredMessageIDs(append(coveredIDs, storedIDs...))
+	}
+	var baselineUnreadCount any
+	var countFromTimestamp any
+	if state.UnreadStateKnown {
+		baselineUnreadCount = int64(state.BaselineUnreadCount)
+		countFromTimestamp = state.CountFrom.UnixMilli()
+	} else {
+		coveredIDs = []string{}
+	}
+	coveredMessageIDs, err := json.Marshal(coveredIDs)
 	if err != nil {
 		return false, err
 	}
@@ -31,29 +56,52 @@ func (s SqlChatReadStateStore) UpsertChatReadState(state *storage.StoredChatRead
 		context.Background(),
 		`INSERT INTO gows_chat_read_state (
             jid, baseline_unread_count, marked_as_unread, unread_state_known,
-            count_from_timestamp, evidence_timestamp
-        ) VALUES ($1, $2, $3, $4, $5, $6)
+            count_from_timestamp, covered_message_ids, evidence_timestamp
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (jid) DO UPDATE SET
             baseline_unread_count = CASE
-                WHEN excluded.unread_state_known THEN excluded.baseline_unread_count
+                WHEN excluded.unread_state_known AND (
+                    NOT gows_chat_read_state.unread_state_known OR
+                    gows_chat_read_state.evidence_timestamp <= excluded.evidence_timestamp
+                ) THEN excluded.baseline_unread_count
                 ELSE gows_chat_read_state.baseline_unread_count
             END,
-            marked_as_unread = excluded.marked_as_unread,
+            marked_as_unread = CASE
+                WHEN gows_chat_read_state.evidence_timestamp <= excluded.evidence_timestamp
+                    THEN excluded.marked_as_unread
+                ELSE gows_chat_read_state.marked_as_unread
+            END,
             unread_state_known = CASE
                 WHEN excluded.unread_state_known THEN TRUE
                 ELSE gows_chat_read_state.unread_state_known
             END,
             count_from_timestamp = CASE
-                WHEN excluded.unread_state_known THEN excluded.count_from_timestamp
+                WHEN excluded.unread_state_known AND (
+                    NOT gows_chat_read_state.unread_state_known OR
+                    gows_chat_read_state.evidence_timestamp <= excluded.evidence_timestamp
+                ) THEN excluded.count_from_timestamp
                 ELSE gows_chat_read_state.count_from_timestamp
             END,
-            evidence_timestamp = excluded.evidence_timestamp
-        WHERE gows_chat_read_state.evidence_timestamp < excluded.evidence_timestamp`,
+            covered_message_ids = CASE
+                WHEN excluded.unread_state_known AND (
+                    NOT gows_chat_read_state.unread_state_known OR
+                    gows_chat_read_state.evidence_timestamp <= excluded.evidence_timestamp
+                ) THEN excluded.covered_message_ids
+                ELSE gows_chat_read_state.covered_message_ids
+            END,
+            evidence_timestamp = CASE
+                WHEN gows_chat_read_state.evidence_timestamp <= excluded.evidence_timestamp
+                    THEN excluded.evidence_timestamp
+                ELSE gows_chat_read_state.evidence_timestamp
+            END
+        WHERE gows_chat_read_state.evidence_timestamp <= excluded.evidence_timestamp
+           OR (NOT gows_chat_read_state.unread_state_known AND excluded.unread_state_known)`,
 		canonical.String(),
-		state.BaselineUnreadCount,
+		baselineUnreadCount,
 		state.MarkedAsUnread,
 		state.UnreadStateKnown,
-		state.CountFrom.UnixMilli(),
+		countFromTimestamp,
+		string(coveredMessageIDs),
 		state.EvidenceTimestamp.UnixMilli(),
 	)
 	if err != nil {
@@ -67,17 +115,6 @@ func (s SqlChatReadStateStore) ApplyChatReadEvent(event storage.ChatReadEvent) (
 	if err != nil {
 		return false, err
 	}
-	if event.Read {
-		return s.UpsertChatReadState(&storage.StoredChatReadState{
-			Jid:                 canonical,
-			BaselineUnreadCount: 0,
-			MarkedAsUnread:      false,
-			UnreadStateKnown:    true,
-			CountFrom:           event.MessageWatermark,
-			EvidenceTimestamp:   event.Timestamp,
-		})
-	}
-
 	loaded, err := s.GetChatReadStates([]types.JID{canonical}, true)
 	if err != nil {
 		return false, err
@@ -86,20 +123,50 @@ func (s SqlChatReadStateStore) ApplyChatReadEvent(event storage.ChatReadEvent) (
 	if state != nil && !event.Timestamp.After(state.EvidenceTimestamp) {
 		return false, nil
 	}
+	if event.Read {
+		return s.upsertChatReadState(&storage.StoredChatReadState{
+			Jid:                 canonical,
+			BaselineUnreadCount: 0,
+			MarkedAsUnread:      false,
+			UnreadStateKnown:    true,
+			CountFrom:           event.MessageWatermark,
+			CoveredMessageIDs:   event.CoveredMessageIDs,
+			EvidenceTimestamp:   event.Timestamp,
+		}, true)
+	}
+
 	if state == nil {
 		state = &storage.StoredChatReadState{
-			Jid: canonical,
+			Jid:               canonical,
+			CountFrom:         event.MessageWatermark,
+			CoveredMessageIDs: event.CoveredMessageIDs,
 		}
-	}
-	if !state.UnreadStateKnown {
-		state.BaselineUnreadCount = 0
-		state.CountFrom = event.MessageWatermark
-		state.UnreadStateKnown = true
 	}
 	state.Jid = canonical
 	state.MarkedAsUnread = true
 	state.EvidenceTimestamp = event.Timestamp
-	return s.UpsertChatReadState(state)
+	return s.upsertChatReadState(state, false)
+}
+
+func (s SqlChatReadStateStore) storedMessageIDsAtBoundary(jid types.JID, watermark time.Time) ([]string, error) {
+	aliases := []string{jid.String()}
+	lids, err := reverseLookupLIDs(s.db, jid.User)
+	if err != nil {
+		return nil, err
+	}
+	aliases = append(aliases, lids...)
+	query, args, err := sq.Select("id").
+		From(MessageTable.Name).
+		Where(sq.Eq{"jid": aliases, "is_real": true, "timestamp": watermark}).
+		ToSql()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := s.db.Select(&ids, query, args...); err != nil {
+		return nil, err
+	}
+	return storage.NormalizeCoveredMessageIDs(ids), nil
 }
 
 func rowsWereChanged(result sql.Result) (bool, error) {
@@ -150,6 +217,7 @@ func (s SqlChatReadStateStore) GetChatReadStates(jids []types.JID, merge bool) (
 		"marked_as_unread",
 		"unread_state_known",
 		"count_from_timestamp",
+		"covered_message_ids",
 		"evidence_timestamp",
 	).From("gows_chat_read_state").Where(sq.Eq{"jid": aliases}).ToSql()
 	if err != nil {
@@ -163,23 +231,36 @@ func (s SqlChatReadStateStore) GetChatReadStates(jids []types.JID, merge bool) (
 
 	for rows.Next() {
 		var rawJID string
-		var baseline uint64
+		var baseline, countFromMillis sql.NullInt64
 		var marked, known bool
-		var countFromMillis, evidenceMillis int64
-		if err := rows.Scan(&rawJID, &baseline, &marked, &known, &countFromMillis, &evidenceMillis); err != nil {
+		var coveredMessageIDsJSON string
+		var evidenceMillis int64
+		if err := rows.Scan(&rawJID, &baseline, &marked, &known, &countFromMillis, &coveredMessageIDsJSON, &evidenceMillis); err != nil {
 			return nil, err
 		}
+		var coveredMessageIDs []string
+		if err := json.Unmarshal([]byte(coveredMessageIDsJSON), &coveredMessageIDs); err != nil {
+			return nil, fmt.Errorf("decode covered message ids for %s: %w", rawJID, err)
+		}
+		if baseline.Valid && baseline.Int64 < 0 {
+			return nil, fmt.Errorf("chat read state returned negative unread baseline for %s", rawJID)
+		}
+		known = known && baseline.Valid && countFromMillis.Valid
 		canonical, ok := aliasToCanonical[rawJID]
 		if !ok {
 			return nil, fmt.Errorf("chat read state returned unexpected jid %s", rawJID)
 		}
 		state := &storage.StoredChatReadState{
 			Jid:                 canonical,
-			BaselineUnreadCount: baseline,
+			BaselineUnreadCount: uint64(baseline.Int64),
 			MarkedAsUnread:      marked,
 			UnreadStateKnown:    known,
-			CountFrom:           time.UnixMilli(countFromMillis),
+			CountFrom:           time.Time{},
+			CoveredMessageIDs:   storage.NormalizeCoveredMessageIDs(coveredMessageIDs),
 			EvidenceTimestamp:   time.UnixMilli(evidenceMillis),
+		}
+		if countFromMillis.Valid {
+			state.CountFrom = time.UnixMilli(countFromMillis.Int64)
 		}
 		key := canonical.String()
 		result[key] = mergeChatReadStates(result[key], state, canonical)
@@ -205,6 +286,7 @@ func mergeChatReadStates(existing, candidate *storage.StoredChatReadState, canon
 	if !merged.UnreadStateKnown && older.UnreadStateKnown {
 		merged.BaselineUnreadCount = older.BaselineUnreadCount
 		merged.CountFrom = older.CountFrom
+		merged.CoveredMessageIDs = append([]string(nil), older.CoveredMessageIDs...)
 		merged.UnreadStateKnown = true
 	}
 	return &merged

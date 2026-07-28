@@ -152,10 +152,13 @@ func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.St
 		for _, alias := range aliases {
 			aliasesToCanonical[alias] = canonical.String()
 		}
-		conditions = append(conditions, sq.And{
-			sq.Eq{"jid": aliases},
-			sq.Gt{"timestamp": state.CountFrom},
-		})
+		boundaryCondition := sq.Or{sq.Gt{"timestamp": state.CountFrom}}
+		atBoundary := sq.And{sq.Eq{"timestamp": state.CountFrom}}
+		if covered := storage.NormalizeCoveredMessageIDs(state.CoveredMessageIDs); len(covered) > 0 {
+			atBoundary = append(atBoundary, sq.NotEq{"id": covered})
+		}
+		boundaryCondition = append(boundaryCondition, atBoundary)
+		conditions = append(conditions, sq.And{sq.Eq{"jid": aliases}, boundaryCondition})
 	}
 	if len(conditions) == 0 {
 		return counts, nil

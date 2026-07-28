@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"sort"
 	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
@@ -49,6 +50,7 @@ type StoredChatReadState struct {
 	MarkedAsUnread      bool
 	UnreadStateKnown    bool
 	CountFrom           time.Time
+	CoveredMessageIDs   []string
 	EvidenceTimestamp   time.Time
 }
 
@@ -56,10 +58,30 @@ type StoredChatReadState struct {
 // orders competing state evidence, while MessageWatermark identifies the last
 // message covered when the chat is marked read.
 type ChatReadEvent struct {
-	Jid              types.JID
-	Timestamp        time.Time
-	Read             bool
-	MessageWatermark time.Time
+	Jid               types.JID
+	Timestamp         time.Time
+	Read              bool
+	MessageWatermark  time.Time
+	CoveredMessageIDs []string
+}
+
+// NormalizeCoveredMessageIDs removes empty and duplicate IDs and returns a
+// stable order suitable for durable boundary comparisons.
+func NormalizeCoveredMessageIDs(ids []string) []string {
+	seen := make(map[string]struct{}, len(ids))
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	return result
 }
 
 type EphemeralSetting struct {

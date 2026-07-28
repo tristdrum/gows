@@ -1,6 +1,7 @@
 package sqlstorage
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,27 +63,32 @@ func TestChatReadStateAddsDeduplicatedInboundMessagesAfterHistoryBaseline(t *tes
 		MarkedAsUnread:      false,
 		UnreadStateKnown:    true,
 		CountFrom:           baseline,
+		CoveredMessageIDs:   []string{"covered-at-boundary"},
 		EvidenceTimestamp:   baseline,
 	})
 	require.NoError(t, err)
 	assert.True(t, applied)
 
 	storeTestMessage(t, messages, "before", jid, baseline.Add(-time.Second), false)
+	storeTestMessage(t, messages, "covered-at-boundary", jid, baseline, false)
+	storeTestMessage(t, messages, "later-at-boundary", jid, baseline, false)
+	storeTestMessage(t, messages, "later-at-boundary", jid, baseline, false)
 	storeTestMessage(t, messages, "incoming", jid, baseline.Add(time.Second), false)
 	storeTestMessage(t, messages, "incoming", jid, baseline.Add(time.Second), false)
-	storeTestMessage(t, messages, "outgoing", jid, baseline.Add(2*time.Second), true)
+	storeTestMessage(t, messages, "outgoing", jid, baseline, true)
 
 	loaded, err := states.GetChatReadStates([]types.JID{jid}, true)
 	require.NoError(t, err)
 	counts, err := messages.CountInboundMessagesAfter(loaded, true)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), loaded[jid.String()].BaselineUnreadCount)
-	assert.Equal(t, uint64(1), counts[jid.String()])
+	assert.Equal(t, uint64(2), counts[jid.String()])
 }
 
 func TestChatReadEventsAreTimestampOrderedAndUnreadPreservesCountWatermark(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
+	messages := container.NewMessageStorage()
 	jid := testJID("15557654321", types.DefaultUserServer)
 	t0 := time.Unix(1_700_000_000, 0)
 
@@ -97,14 +103,18 @@ func TestChatReadEventsAreTimestampOrderedAndUnreadPreservesCountWatermark(t *te
 	require.NoError(t, err)
 
 	readWatermark := t0.Add(10 * time.Second)
+	storeTestMessage(t, messages, "read-boundary", jid, readWatermark, false)
+	storeTestMessage(t, messages, "other-covered-at-read", jid, readWatermark, false)
 	applied, err := states.ApplyChatReadEvent(storage.ChatReadEvent{
-		Jid:              jid,
-		Timestamp:        t0.Add(20 * time.Second),
-		Read:             true,
-		MessageWatermark: readWatermark,
+		Jid:               jid,
+		Timestamp:         t0.Add(20 * time.Second),
+		Read:              true,
+		MessageWatermark:  readWatermark,
+		CoveredMessageIDs: []string{"read-boundary"},
 	})
 	require.NoError(t, err)
 	assert.True(t, applied)
+	storeTestMessage(t, messages, "late-at-read-boundary", jid, readWatermark, false)
 
 	applied, err = states.ApplyChatReadEvent(storage.ChatReadEvent{
 		Jid:              jid,
@@ -132,10 +142,14 @@ func TestChatReadEventsAreTimestampOrderedAndUnreadPreservesCountWatermark(t *te
 	assert.True(t, state.MarkedAsUnread)
 	assert.True(t, state.UnreadStateKnown)
 	assert.Equal(t, readWatermark, state.CountFrom)
+	assert.Equal(t, []string{"other-covered-at-read", "read-boundary"}, state.CoveredMessageIDs)
 	assert.Equal(t, t0.Add(30*time.Second), state.EvidenceTimestamp)
+	counts, err := messages.CountInboundMessagesAfter(loaded, true)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), counts[jid.String()])
 }
 
-func TestUnreadEventWithoutBaselineEstablishesAuthoritativeMarkedUnreadState(t *testing.T) {
+func TestUnreadEventWithoutBaselineKeepsNumericCountUnknown(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
 	jid := testJID("15550001111", types.DefaultUserServer)
@@ -155,9 +169,18 @@ func TestUnreadEventWithoutBaselineEstablishesAuthoritativeMarkedUnreadState(t *
 	state := loaded[jid.String()]
 	require.NotNil(t, state)
 	assert.True(t, state.MarkedAsUnread)
-	assert.True(t, state.UnreadStateKnown)
-	assert.Zero(t, state.BaselineUnreadCount)
-	assert.Equal(t, watermark, state.CountFrom)
+	assert.False(t, state.UnreadStateKnown)
+	var persisted struct {
+		Baseline  sql.NullInt64 `db:"baseline_unread_count"`
+		CountFrom sql.NullInt64 `db:"count_from_timestamp"`
+	}
+	require.NoError(t, container.db.Get(
+		&persisted,
+		"SELECT baseline_unread_count, count_from_timestamp FROM gows_chat_read_state WHERE jid = $1",
+		jid.String(),
+	))
+	assert.False(t, persisted.Baseline.Valid)
+	assert.False(t, persisted.CountFrom.Valid)
 }
 
 func TestIncompleteNewerHistoryKeepsEstablishedUnreadCount(t *testing.T) {
@@ -191,6 +214,66 @@ func TestIncompleteNewerHistoryKeepsEstablishedUnreadCount(t *testing.T) {
 	assert.True(t, state.MarkedAsUnread)
 	assert.True(t, state.UnreadStateKnown)
 	assert.Equal(t, t0, state.CountFrom)
+}
+
+func TestOlderHistoryBaselineCompletesNewerUnknownUnreadMarker(t *testing.T) {
+	container := newReadStateTestContainer(t)
+	states := container.NewChatReadStateStorage()
+	jid := testJID("15550006666", types.DefaultUserServer)
+	baselineTime := time.Unix(1_700_000_000, 0)
+	markerTime := baselineTime.Add(time.Minute)
+
+	_, err := states.ApplyChatReadEvent(storage.ChatReadEvent{
+		Jid:              jid,
+		Timestamp:        markerTime,
+		Read:             false,
+		MessageWatermark: markerTime,
+	})
+	require.NoError(t, err)
+	_, err = states.UpsertChatReadState(&storage.StoredChatReadState{
+		Jid:                 jid,
+		BaselineUnreadCount: 4,
+		MarkedAsUnread:      false,
+		UnreadStateKnown:    true,
+		CountFrom:           baselineTime,
+		EvidenceTimestamp:   baselineTime,
+	})
+	require.NoError(t, err)
+
+	loaded, err := states.GetChatReadStates([]types.JID{jid}, true)
+	require.NoError(t, err)
+	state := loaded[jid.String()]
+	require.NotNil(t, state)
+	assert.Equal(t, uint64(4), state.BaselineUnreadCount)
+	assert.True(t, state.MarkedAsUnread)
+	assert.True(t, state.UnreadStateKnown)
+	assert.Equal(t, baselineTime, state.CountFrom)
+	assert.Equal(t, markerTime, state.EvidenceTimestamp)
+}
+
+func TestRepeatedHistoryAtSameBoundaryRefreshesCoveredMessageIDs(t *testing.T) {
+	container := newReadStateTestContainer(t)
+	states := container.NewChatReadStateStorage()
+	messages := container.NewMessageStorage()
+	jid := testJID("15550005555", types.DefaultUserServer)
+	boundary := time.Unix(1_700_000_400, 0)
+	state := &storage.StoredChatReadState{
+		Jid:                 jid,
+		BaselineUnreadCount: 2,
+		UnreadStateKnown:    true,
+		CountFrom:           boundary,
+		EvidenceTimestamp:   boundary,
+	}
+	storeTestMessage(t, messages, "history-first", jid, boundary, false)
+	_, err := states.UpsertChatReadState(state)
+	require.NoError(t, err)
+	storeTestMessage(t, messages, "history-second", jid, boundary, false)
+	_, err = states.UpsertChatReadState(state)
+	require.NoError(t, err)
+
+	loaded, err := states.GetChatReadStates([]types.JID{jid}, true)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"history-first", "history-second"}, loaded[jid.String()].CoveredMessageIDs)
 }
 
 func TestChatReadStateMergesLIDAndPhoneMessages(t *testing.T) {
@@ -245,7 +328,7 @@ func TestChatReadStateMergesLIDAndPhoneMessages(t *testing.T) {
 	assert.Empty(t, loaded)
 }
 
-func TestChatReadStateMergesNewerAuthoritativeLIDEventOverPhoneBaseline(t *testing.T) {
+func TestChatReadStateMergesNewerUnknownLIDMarkerWithPhoneBaseline(t *testing.T) {
 	container := newReadStateTestContainer(t)
 	states := container.NewChatReadStateStorage()
 	lid := testJID("100000000000002", types.HiddenUserServer)
@@ -274,9 +357,41 @@ func TestChatReadStateMergesNewerAuthoritativeLIDEventOverPhoneBaseline(t *testi
 	require.NoError(t, err)
 	state := loaded[pn.String()]
 	require.NotNil(t, state)
-	assert.Zero(t, state.BaselineUnreadCount)
+	assert.Equal(t, uint64(5), state.BaselineUnreadCount)
 	assert.True(t, state.MarkedAsUnread)
 	assert.True(t, state.UnreadStateKnown)
-	assert.Equal(t, t0.Add(30*time.Second), state.CountFrom)
+	assert.Equal(t, t0, state.CountFrom)
 	assert.Equal(t, t0.Add(time.Minute), state.EvidenceTimestamp)
+}
+
+func TestReadEventSnapshotsSameSecondMessagesAcrossPhoneAndLID(t *testing.T) {
+	container := newReadStateTestContainer(t)
+	states := container.NewChatReadStateStorage()
+	messages := container.NewMessageStorage()
+	lid := testJID("100000000000003", types.HiddenUserServer)
+	pn := testJID("15557770000", types.DefaultUserServer)
+	watermark := time.Unix(1_700_000_500, 0)
+	_, err := container.db.Exec("INSERT INTO whatsmeow_lid_map (lid, pn) VALUES ($1, $2)", lid.User, pn.User)
+	require.NoError(t, err)
+	storeTestMessage(t, messages, "covered-pn", pn, watermark, false)
+	storeTestMessage(t, messages, "covered-lid", lid, watermark, false)
+
+	_, err = states.ApplyChatReadEvent(storage.ChatReadEvent{
+		Jid:               pn,
+		Timestamp:         watermark.Add(time.Second),
+		Read:              true,
+		MessageWatermark:  watermark,
+		CoveredMessageIDs: []string{"covered-pn"},
+	})
+	require.NoError(t, err)
+	storeTestMessage(t, messages, "late-lid", lid, watermark, false)
+
+	loaded, err := states.GetChatReadStates([]types.JID{pn}, true)
+	require.NoError(t, err)
+	state := loaded[pn.String()]
+	require.NotNil(t, state)
+	assert.Equal(t, []string{"covered-lid", "covered-pn"}, state.CoveredMessageIDs)
+	counts, err := messages.CountInboundMessagesAfter(loaded, true)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), counts[pn.String()])
 }

@@ -7,8 +7,10 @@ import (
 	"github.com/devlikeapro/gows/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waSyncAction"
+	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -21,6 +23,16 @@ func TestChatReadStateFromConversationUsesHistoryUnreadBaseline(t *testing.T) {
 		UnreadCount:           proto.Uint32(3),
 		MarkedAsUnread:        proto.Bool(true),
 		ConversationTimestamp: proto.Uint64(1_700_000_000),
+		Messages: []*waHistorySync.HistorySyncMsg{
+			{Message: &waWeb.WebMessageInfo{
+				Key:              &waCommon.MessageKey{ID: proto.String("covered-history")},
+				MessageTimestamp: proto.Uint64(1_700_000_000),
+			}},
+			{Message: &waWeb.WebMessageInfo{
+				Key:              &waCommon.MessageKey{ID: proto.String("older-history")},
+				MessageTimestamp: proto.Uint64(1_699_999_999),
+			}},
+		},
 	}
 
 	state, ok := chatReadStateFromConversation(conversation, jid)
@@ -31,6 +43,7 @@ func TestChatReadStateFromConversationUsesHistoryUnreadBaseline(t *testing.T) {
 	assert.True(t, state.MarkedAsUnread)
 	assert.True(t, state.UnreadStateKnown)
 	assert.Equal(t, time.Unix(1_700_000_000, 0), state.CountFrom)
+	assert.Equal(t, []string{"covered-history"}, state.CoveredMessageIDs)
 	assert.Equal(t, state.CountFrom, state.EvidenceTimestamp)
 }
 
@@ -57,6 +70,12 @@ func TestChatReadEventUsesMessageRangeWatermark(t *testing.T) {
 			Read: proto.Bool(true),
 			MessageRange: &waSyncAction.SyncActionMessageRange{
 				LastMessageTimestamp: proto.Int64(1_700_000_090),
+				Messages: []*waSyncAction.SyncActionMessage{
+					{
+						Key:       &waCommon.MessageKey{ID: proto.String("covered-read")},
+						Timestamp: proto.Int64(1_700_000_090),
+					},
+				},
 			},
 		},
 	}
@@ -67,6 +86,7 @@ func TestChatReadEventUsesMessageRangeWatermark(t *testing.T) {
 	assert.True(t, readEvent.Read)
 	assert.Equal(t, eventTime, readEvent.Timestamp)
 	assert.Equal(t, time.Unix(1_700_000_090, 0), readEvent.MessageWatermark)
+	assert.Equal(t, []string{"covered-read"}, readEvent.CoveredMessageIDs)
 }
 
 type recordingChatReadStateStorage struct {
