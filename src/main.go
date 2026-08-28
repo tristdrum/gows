@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/experimental"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"net"
 	_ "net/http/pprof"
@@ -69,6 +70,16 @@ func buildGrpcServer(log waLog.Logger) *grpc.Server {
 		grpc.MaxConcurrentStreams(5000),
 		grpc.InitialWindowSize(16*1024*1024),
 		grpc.InitialConnWindowSize(32*1024*1024),
+		// Detect clients that went away without closing the connection,
+		// otherwise a stuck stream.Send blocks the event listener forever
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
 	)
 	srv := server.NewServer()
 	// Add an event handler to the client

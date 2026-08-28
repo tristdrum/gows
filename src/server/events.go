@@ -2,12 +2,47 @@ package server
 
 import (
 	"encoding/json"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+
 	"github.com/devlikeapro/gows/proto"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
-	"reflect"
-	"strings"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+// eventListenerBuffer is how many events we keep for a listener that doesn't read them fast enough.
+const eventListenerBuffer = 1000
+
+// maxConsecutiveDrops is how many events in a row we may drop before we consider
+// the listener dead and ask the client to reconnect.
+const maxConsecutiveDrops = eventListenerBuffer
+
+type eventListener struct {
+	events chan interface{}
+	// closed once the listener is considered dead, StreamEvents watches it
+	poisoned   chan struct{}
+	poisonOnce sync.Once
+	drops      atomic.Int64
+}
+
+func newEventListener() *eventListener {
+	return &eventListener{
+		events:   make(chan interface{}, eventListenerBuffer),
+		poisoned: make(chan struct{}),
+	}
+}
+
+// poison marks the listener as dead. It touches neither the listeners map nor
+// listenersLock, so it's safe to call while holding listenersLock.RLock().
+func (l *eventListener) poison() {
+	l.poisonOnce.Do(func() {
+		close(l.poisoned)
+	})
+}
 
 func (s *Server) safeMarshal(v interface{}) (result string) {
 	defer func() {
@@ -39,7 +74,14 @@ func (s *Server) StreamEvents(req *__.StreamEventsRequest, stream grpc.ServerStr
 		select {
 		case <-stream.Context().Done():
 			return stream.Context().Err()
-		case event, ok := <-listener:
+		case <-listener.poisoned:
+			s.log.Warnf("Listener %s is too slow, session %s, asking the client to reconnect", streamId.String(), sessionName)
+			return status.Errorf(
+				codes.ResourceExhausted,
+				"listener is too slow for session %s, reconnect required",
+				sessionName,
+			)
+		case event, ok := <-listener.events:
 			if !ok {
 				return nil
 			}
@@ -79,21 +121,30 @@ func (s *Server) SendEventToAllListeners(session string, event interface{}) {
 	for id, listener := range sessionListeners {
 		// Drop the event if the listener buffer is full to avoid blocking and goroutine leaks.
 		select {
-		case listener <- event:
+		case listener.events <- event:
+			listener.drops.Store(0)
 		default:
-			s.log.Warnf("Dropping event for slow listener %s, session %s", id.String(), session)
+			drops := listener.drops.Add(1)
+			s.log.Warnf("Dropping event for slow listener %s, session %s, dropped in a row: %d", id.String(), session, drops)
+			if drops >= maxConsecutiveDrops {
+				// The listener never catches up - kill the stream so the client
+				// reconnects with an empty buffer instead of losing events forever.
+				// We hold the read lock here, so we can't call removeListener:
+				// StreamEvents removes itself once it sees the poisoned channel.
+				listener.poison()
+			}
 		}
 	}
 }
 
-func (s *Server) addListener(session string, id uuid.UUID) chan interface{} {
+func (s *Server) addListener(session string, id uuid.UUID) *eventListener {
 	s.listenersLock.Lock()
 	defer s.listenersLock.Unlock()
 
-	listener := make(chan interface{}, 1000)
+	listener := newEventListener()
 	sessionListeners, ok := s.listeners[session]
 	if !ok {
-		sessionListeners = map[uuid.UUID]chan interface{}{}
+		sessionListeners = map[uuid.UUID]*eventListener{}
 		s.listeners[session] = sessionListeners
 	}
 	sessionListeners[id] = listener
@@ -112,5 +163,5 @@ func (s *Server) removeListener(session string, id uuid.UUID) {
 	if len(s.listeners[session]) == 0 {
 		delete(s.listeners, session)
 	}
-	close(listener)
+	close(listener.events)
 }

@@ -88,8 +88,7 @@ func ExtractEphemeralSettingsFromMsg(event *events.Message) *storage.StoredChatE
 
 // ExtractEphemeralSettingsFromProtocolMessage extracts ephemeral settings from a message event.
 func ExtractEphemeralSettingsFromProtocolMessage(info types.MessageInfo, protocol *waE2E.ProtocolMessage) *storage.StoredChatEphemeralSetting {
-	type_ := *protocol.Type
-	switch type_ {
+	switch protocol.GetType() {
 	case waE2E.ProtocolMessage_EPHEMERAL_SETTING, waE2E.ProtocolMessage_EPHEMERAL_SYNC_RESPONSE:
 		var setting *storage.StoredChatEphemeralSetting
 		setting = storage.NotEphemeral(info.Chat)

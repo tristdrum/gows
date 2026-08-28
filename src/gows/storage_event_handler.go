@@ -57,6 +57,10 @@ func (st *StorageEventHandler) GetMessageForRetry(requester, to types.JID, id ty
 		st.log.Errorf("Error getting message for retry - requester %v, to %v, id %v: %v", requester, to, id, err)
 		return nil
 	}
+	if msg == nil || msg.Message == nil {
+		st.log.Warnf("No message for retry - requester %v, to %v, id %v", requester, to, id)
+		return nil
+	}
 	return msg.Message.RawMessage
 }
 
@@ -205,20 +209,30 @@ func (st *StorageEventHandler) handleSaveMessage(event *events.Message, status *
 }
 
 func (st *StorageEventHandler) handleMessageEvent(event *events.Message) {
+	if event.Message == nil {
+		return
+	}
+	protocolMessage := event.Message.GetProtocolMessage()
+
 	// Revoked message
-	isRevoked := event.Message.ProtocolMessage != nil && *event.Message.ProtocolMessage.Type == waE2E.ProtocolMessage_REVOKE
+	// NOTE: ProtocolMessage_REVOKE is the zero value, always check the message itself first
+	isRevoked := protocolMessage != nil && protocolMessage.GetType() == waE2E.ProtocolMessage_REVOKE
 	if isRevoked {
-		err := st.storage.Messages.DeleteMessage(*event.Message.ProtocolMessage.Key.ID)
+		id := protocolMessage.GetKey().GetID()
+		if id == "" {
+			st.log.Warnf("Revoke message %v without a message id, ignoring", event.Info.ID)
+			return
+		}
+		err := st.storage.Messages.DeleteMessage(id)
 		if err != nil {
-			st.log.Errorf("Error deleting message %v: %v", *event.Message.ProtocolMessage.Key.ID, err)
+			st.log.Errorf("Error deleting message %v: %v", id, err)
 		}
 		return
 	}
 
 	// Chat ephemeral settings - changed
-	isProtocolMessage := event.Message != nil && event.Message.ProtocolMessage != nil
-	if isProtocolMessage {
-		setting := ExtractEphemeralSettingsFromProtocolMessage(event.Info, event.Message.ProtocolMessage)
+	if protocolMessage != nil {
+		setting := ExtractEphemeralSettingsFromProtocolMessage(event.Info, protocolMessage)
 		if setting != nil {
 			err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
 			if err != nil {
@@ -284,7 +298,8 @@ func (st *StorageEventHandler) handleReceipt(event *events.Receipt) {
 }
 
 func (st *StorageEventHandler) handleHistorySync(event *events.HistorySync) {
-	for _, conv := range event.Data.Conversations {
+	conversations := event.Data.GetConversations()
+	for _, conv := range conversations {
 		jid, err := types.ParseJID(conv.GetID())
 		if err != nil {
 			st.log.Errorf("Error parsing JID: %v", err)
@@ -298,7 +313,7 @@ func (st *StorageEventHandler) handleHistorySync(event *events.HistorySync) {
 
 		go st.saveHistoryForOneChat(conv, jid)
 	}
-	st.log.Debugf("Saved history for %v chats", len(event.Data.Conversations))
+	st.log.Debugf("Saved history for %v chats", len(conversations))
 }
 
 func (st *StorageEventHandler) handleMarkChatAsRead(event *events.MarkChatAsRead) {
@@ -361,6 +376,10 @@ func (st *StorageEventHandler) handleMeJoinedGroup(group *events.JoinedGroup) {
 
 func (st *StorageEventHandler) handleMeLeftGroup(info *events.GroupInfo) bool {
 	jid := st.gows.Store.ID
+	if jid == nil {
+		// Not logged in, we can't tell if it's us who left
+		return false
+	}
 	for _, leave := range info.Leave {
 		if leave == jid.ToNonAD() {
 			st.log.Debugf("I left group %v", info.JID)
@@ -405,9 +424,9 @@ func (st *StorageEventHandler) handleLabelEdit(event *events.LabelEdit) {
 	if event.Action == nil {
 		return
 	}
-	action := *event.Action
+	action := event.Action
 	// Delete
-	if action.Deleted != nil && *action.Deleted {
+	if action.GetDeleted() {
 		err := st.storage.Labels.DeleteLabel(event.LabelID)
 		if err != nil {
 			st.log.Errorf("Error deleting label %v: %v", event.LabelID, err)
@@ -420,8 +439,8 @@ func (st *StorageEventHandler) handleLabelEdit(event *events.LabelEdit) {
 	// Create
 	label := &storage.Label{
 		ID:    event.LabelID,
-		Name:  *action.Name,
-		Color: int(*action.Color),
+		Name:  action.GetName(),
+		Color: int(action.GetColor()),
 	}
 
 	err := st.storage.Labels.UpsertLabel(label)
@@ -437,9 +456,9 @@ func (st *StorageEventHandler) handleLabelAssociationChat(event *events.LabelAss
 	// Get the association data directly from the event
 	jid := event.JID
 	labelID := event.LabelID
-	labeled := event.Action.Labeled
+	labeled := event.Action.GetLabeled()
 
-	if labeled != nil && *labeled {
+	if labeled {
 		// Make sure we have the label
 		// it can happen on full sync or event disordering
 		err := retry.Do(
@@ -479,7 +498,7 @@ func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contac
 	cli := st.gows.Client
 
 	// Save lid to jid mapping
-	if cli.Store.LIDs == nil {
+	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
 		return
 	}
 
@@ -487,13 +506,13 @@ func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contac
 	var lid = types.EmptyJID
 	var jid = types.EmptyJID
 
+	act := contact.Action
 	switch contact.JID.Server {
 	// jid => lid
 	case types.DefaultUserServer:
 		jid = contact.JID
-		act := contact.Action
-		if act.LidJID != nil && *act.LidJID != "" {
-			lid, err = types.ParseJID(*act.LidJID)
+		if act.GetLidJID() != "" {
+			lid, err = types.ParseJID(act.GetLidJID())
 			if err != nil {
 				st.log.Errorf("Failed to parse LID JID: %v", err)
 				return
@@ -503,9 +522,8 @@ func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contac
 	// lid => jid
 	case types.HiddenUserServer:
 		lid = contact.JID
-		act := contact.Action
-		if act.PnJID != nil && *act.PnJID != "" {
-			jid, err = types.ParseJID(*act.PnJID)
+		if act.GetPnJID() != "" {
+			jid, err = types.ParseJID(act.GetPnJID())
 			if err != nil {
 				st.log.Errorf("Failed to parse PN JID: %v", err)
 				return

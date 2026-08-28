@@ -23,8 +23,8 @@ type Server struct {
 	Sm  *gows.SessionManager
 	log waLog.Logger
 
-	// session id -> id -> event channel
-	listeners     map[string]map[uuid.UUID]chan interface{}
+	// session id -> id -> event listener
+	listeners     map[string]map[uuid.UUID]*eventListener
 	listenersLock sync.RWMutex
 	// session id -> cancel func for event subscription
 	eventSubs     map[string]context.CancelFunc
@@ -35,7 +35,7 @@ func NewServer() *Server {
 	return &Server{
 		Sm:            gows.NewSessionManager(),
 		log:           gowsLog.Stdout("gRPC", "INFO", false),
-		listeners:     map[string]map[uuid.UUID]chan interface{}{},
+		listeners:     map[string]map[uuid.UUID]*eventListener{},
 		listenersLock: sync.RWMutex{},
 		eventSubs:     map[string]context.CancelFunc{},
 		eventSubsLock: sync.Mutex{},
