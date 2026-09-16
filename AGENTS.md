@@ -1,1 +1,2 @@
-- Find `whatsmeow` lib source code at `../whatsmeow`.
+- Resolve the pinned WhatsMeow source from `src/` with `go list -m -f '{{.Dir}}' go.mau.fi/whatsmeow`; treat the shared module cache as read-only.
+- Run `make test` after changing the WhatsMeow pin. It includes the offline status-frame acknowledgement regression in a temporary copy of the pinned module; never modify the shared Go module cache.

@@ -3,6 +3,7 @@ all: clean build-proto test build
 test:
 	cd src && \
 	go test ./...
+	./scripts/test-whatsmeow-status-ack.sh
 
 clean:
 	rm -rf src/proto
