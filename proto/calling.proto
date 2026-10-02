@@ -1,0 +1,29 @@
+syntax = "proto3";
+package calling;
+option go_package = "/";
+
+// This service is served only on GOWS's existing private Unix socket.
+service Calling {
+  rpc Control(CallControl) returns (CallStatus);
+  rpc Media(stream MediaPacket) returns (stream MediaPacket);
+}
+message CallControl {
+  string session = 1;
+  string call_id = 2;
+  string peer = 3;
+  string action = 4; // dial, accept, hangup, status
+  string request_id = 5; // single-use outbound attempt identity
+}
+message CallStatus {
+  string call_id = 1;
+  string peer = 2;
+  string state = 3;
+  string direction = 4;
+}
+message MediaPacket {
+  string session = 1;
+  string call_id = 2;
+  string kind = 3; // open, ready, pcm, clear, ended
+  bytes pcm = 4; // exactly 1920 bytes PCM16LE mono 16 kHz
+  uint64 sequence = 5;
+}

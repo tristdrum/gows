@@ -85,6 +85,7 @@ func buildGrpcServer(log waLog.Logger) *grpc.Server {
 	// Add an event handler to the client
 	pb.RegisterMessageServiceServer(grpcServer, srv)
 	pb.RegisterEventStreamServer(grpcServer, srv)
+	pb.RegisterCallingServer(grpcServer, srv)
 	return grpcServer
 }
 

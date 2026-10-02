@@ -18,6 +18,7 @@ var _ pb.MessageServiceServer = (*Server)(nil)
 var _ pb.EventStreamServer = (*Server)(nil)
 
 type Server struct {
+	pb.UnimplementedCallingServer
 	pb.UnsafeMessageServiceServer
 	pb.UnsafeEventStreamServer
 	Sm  *gows.SessionManager

@@ -2,10 +2,13 @@ package gows
 
 import (
 	"context"
+	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/devlikeapro/gows/calling"
 	"github.com/devlikeapro/gows/storage"
 	"github.com/devlikeapro/gows/storage/sqlstorage"
 	_ "github.com/jackc/pgx/v5"     // Import the Postgres driver
@@ -30,6 +33,7 @@ type GoWS struct {
 	storageEventHandler    *StorageEventHandler
 	eventHandlerID         uint32
 	chatReadStateBootstrap sync.Once
+	Voice                  *calling.Manager
 }
 
 func (gows *GoWS) reissueEvent(event interface{}) {
@@ -122,6 +126,9 @@ func (gows *GoWS) Stop() {
 
 	// Prevent auto-reconnect and stop event emission before tearing down storage.
 	gows.EnableAutoReconnect = false
+	if gows.Voice != nil {
+		gows.Voice.Close()
+	}
 	gows.InitialAutoReconnect = false
 	if gows.eventHandlerID != 0 {
 		gows.RemoveEventHandler(gows.eventHandlerID)
@@ -189,6 +196,14 @@ func BuildSession(
 		nil,
 		0,
 		sync.Once{},
+		nil,
+	}
+	// Unrelated sessions retain their existing raw stanza handlers.
+	for _, name := range strings.Split(os.Getenv("GOWS_CALLING_SESSIONS"), ",") {
+		if name = strings.TrimSpace(name); name != "" && name == ctx.Value("name") {
+			gows.Voice = calling.New(client, func(event calling.Event) { gows.emitEvent(event) })
+			break
+		}
 	}
 	if storageCfg == (StorageConfig{}) {
 		storageCfg = DefaultStorageConfig()
