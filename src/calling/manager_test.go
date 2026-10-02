@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type fakeCall struct {
@@ -12,6 +13,70 @@ type fakeCall struct {
 	unsupported bool
 	end         func(string)
 	state       func(string)
+}
+
+type uncertainDialer struct {
+	started chan struct{}
+	release chan struct{}
+	call    *fakeCall
+}
+
+func (d *uncertainDialer) Dial(ctx context.Context, peer string) (handle, error) {
+	close(d.started)
+	<-d.release // Model an offer success racing a canceled/lost HTTP response.
+	return d.call, nil
+}
+func TestCancelAttemptFencesLateDialAndNeverRedials(t *testing.T) {
+	d := &uncertainDialer{make(chan struct{}), make(chan struct{}), &fakeCall{id: "uncertain", peer: "1@lid"}}
+	m := newManager(d, nil)
+	result := make(chan error, 1)
+	go func() { _, err := m.Dial(context.Background(), "1@s.whatsapp.net", "lost-response"); result <- err }()
+	<-d.started
+	state, err := m.CancelAttempt("lost-response")
+	if err != nil || state.State != "dialing" {
+		t.Fatalf("pending cancellation not tracked: %+v %v", state, err)
+	}
+	close(d.release)
+	select {
+	case err = <-result:
+		if err == nil {
+			t.Fatal("canceled dial adopted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not settle")
+	}
+	state, err = m.AttemptStatus("lost-response")
+	if err != nil || state.ID != "uncertain" || state.State != "ended" || !d.call.ended {
+		t.Fatalf("uncertain call not retired: %+v %v", state, err)
+	}
+	if _, err = m.Dial(context.Background(), "1@s.whatsapp.net", "lost-response"); !errors.Is(err, ErrAttemptUsed) {
+		t.Fatal("canceled offer replayed")
+	}
+}
+func TestCancelBeforeDelayedDialConsumesAttempt(t *testing.T) {
+	d := &fakeDialer{}
+	m := newManager(d, nil)
+	state, err := m.CancelAttempt("not-yet-received")
+	if err != nil || state.State != "ended" {
+		t.Fatal("cancellation tombstone missing")
+	}
+	if _, err = m.Dial(context.Background(), "1@s.whatsapp.net", "not-yet-received"); !errors.Is(err, ErrAttemptUsed) || d.n != 0 {
+		t.Fatal("late request created offer")
+	}
+}
+func TestAttemptLookupRecoversActiveIDAndCancelClosesIt(t *testing.T) {
+	m := newManager(&fakeDialer{}, nil)
+	if _, err := m.Dial(context.Background(), "1@s.whatsapp.net", "response-lost"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := m.AttemptStatus("response-lost")
+	if err != nil || state.ID != "call" || state.State != "ringing" {
+		t.Fatalf("active attempt unavailable: %+v %v", state, err)
+	}
+	state, err = m.CancelAttempt("response-lost")
+	if err != nil || state.ID != "call" || state.State != "ended" {
+		t.Fatalf("recovered call not canceled: %+v %v", state, err)
+	}
 }
 
 func (c *fakeCall) ID() string        { return c.id }

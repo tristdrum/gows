@@ -13,6 +13,13 @@ Outbound request IDs are consumed before dialing and never retried by this
 adapter. The Min coordinator must persist authorization and attempt identity
 across process restarts. Video and group calling are outside this contract.
 
+Control `status` with an empty call ID and the outbound request ID recovers an
+attempt's call ID after a lost response. Control `cancel` consumes that request ID
+even if its dial has not arrived yet, cancels in-flight setup, and fences a late
+successful offer. `dialing` is nonterminal; only `ended` proves the attempt has
+settled. The call ID remains available for peer-end cleanup. One terminate
+attempt is bounded to five seconds; never turn an uncertain outcome into redial.
+
 `calling.Event` emits only ID, peer, state and direction. Raw audio, call keys,
 relay credentials and provider signaling payloads are never emitted. The caller
 must verify identity and account permissions before accepting or dialing.

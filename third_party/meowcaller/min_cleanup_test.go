@@ -14,12 +14,19 @@ func TestFailedOfferRetiresRegisteredCall(t *testing.T) {
 	c.eng = e
 	call := &Call{eng: e, id: "failed", phase: CallPhaseCalling}
 	e.calls[call.id] = &engineCall{call: call, callKey: []byte("sensitive")}
-	e.sendCallNode = func(context.Context, waBinary.Node) error { return errors.New("send failed") }
+	var nodes []waBinary.Node
+	e.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		nodes = append(nodes, node)
+		return errors.New("send failed")
+	}
 	if err := e.sendOffer(context.Background(), call.id, waBinary.Node{}); err == nil {
 		t.Fatal("failed send reported success")
 	}
 	if e.calls[call.id] != nil || call.State() != CallPhaseEnded {
 		t.Fatal("failed send retained an unowned call")
+	}
+	if len(nodes) != 2 || findChild(&nodes[1], "terminate") == nil {
+		t.Fatal("uncertain offer did not receive exactly one terminate")
 	}
 }
 

@@ -48,7 +48,13 @@ func (s *Server) Control(ctx context.Context, req *pb.CallControl) (*pb.CallStat
 		err = m.Hangup(req.GetCallId())
 		result = calling.Status{ID: req.GetCallId(), State: "ended"}
 	case "status":
-		result, err = m.Status(req.GetCallId())
+		if req.GetCallId() == "" {
+			result, err = m.AttemptStatus(req.GetRequestId())
+		} else {
+			result, err = m.Status(req.GetCallId())
+		}
+	case "cancel":
+		result, err = m.CancelAttempt(req.GetRequestId())
 	default:
 		return nil, status.Error(codes.InvalidArgument, "unknown call action")
 	}

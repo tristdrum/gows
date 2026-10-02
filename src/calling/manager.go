@@ -47,10 +47,10 @@ type nativeDialer struct{ client *meowcaller.Client }
 
 func (d nativeDialer) Dial(ctx context.Context, peer string) (handle, error) {
 	c, err := d.client.Call(ctx, peer)
-	if err != nil {
+	if c == nil {
 		return nil, err
 	}
-	return nativeCall{c}, nil
+	return nativeCall{c}, err
 }
 
 type nativeCall struct{ call *meowcaller.Call }
@@ -91,6 +91,11 @@ type record struct {
 	timer, ringTimer *time.Timer
 	terminal         bool
 }
+type attempt struct {
+	id                string
+	cancel            context.CancelFunc
+	canceled, settled bool
+}
 type Manager struct {
 	mu              sync.Mutex
 	eventMu         sync.Mutex
@@ -98,7 +103,7 @@ type Manager struct {
 	emit            func(Event)
 	active          *record
 	dialing, closed bool
-	used            map[string]struct{}
+	used            map[string]*attempt
 }
 
 // New installs the calling adapter before the existing client connects.
@@ -112,7 +117,7 @@ func New(client *whatsmeow.Client, emit func(Event)) *Manager {
 	return m
 }
 func newManager(d dialer, emit func(Event)) *Manager {
-	return &Manager{dialer: d, emit: emit, used: make(map[string]struct{})}
+	return &Manager{dialer: d, emit: emit, used: make(map[string]*attempt)}
 }
 
 func (m *Manager) Dial(ctx context.Context, peer, requestID string) (Status, error) {
@@ -133,21 +138,101 @@ func (m *Manager) Dial(ctx context.Context, peer, requestID string) (Status, err
 		m.mu.Unlock()
 		return Status{}, ErrAttemptUsed
 	}
-	m.used[requestID] = struct{}{}
+	dialCtx, cancel := context.WithCancel(ctx)
+	a := &attempt{cancel: cancel}
+	m.used[requestID] = a
 	m.dialing = true
 	m.mu.Unlock()
-	c, err := m.dialer.Dial(ctx, peer)
-	if err != nil {
-		m.mu.Lock()
-		m.dialing = false
-		m.mu.Unlock()
-		return Status{}, err
+	defer cancel()
+	c, err := m.dialer.Dial(dialCtx, peer)
+	if err == nil && c == nil {
+		err = ErrCallNotFound
 	}
-	if err = m.adopt(c, "outbound"); err != nil {
+	m.mu.Lock()
+	if c != nil {
+		a.id = c.ID()
+	}
+	canceled := a.canceled || m.closed
+	m.mu.Unlock()
+	if err == nil && canceled {
+		err = context.Canceled
+	}
+	if err == nil {
+		err = m.adopt(c, "outbound")
+	}
+	// Cancellation may arrive between the first check and adoption.
+	m.mu.Lock()
+	canceled = a.canceled || m.closed
+	m.mu.Unlock()
+	if err == nil && canceled {
+		_ = m.Hangup(c.ID())
+		err = context.Canceled
+	}
+	if err != nil && c != nil && c.State() != "ended" {
 		_ = c.Hangup()
+	}
+	m.mu.Lock()
+	a.settled = true
+	a.cancel = nil
+	m.dialing = false
+	m.mu.Unlock()
+	if err != nil {
 		return Status{}, err
 	}
 	return m.Status(c.ID())
+}
+
+// AttemptStatus recovers an offer's identity after a lost control response.
+// A dialing result is nonterminal, including while cancellation is settling.
+func (m *Manager) AttemptStatus(requestID string) (Status, error) {
+	m.mu.Lock()
+	a := m.used[requestID]
+	if a == nil {
+		m.mu.Unlock()
+		return Status{}, ErrCallNotFound
+	}
+	result := Status{ID: a.id, State: "ended", Direction: "outbound"}
+	if !a.settled {
+		result.State = "dialing"
+	}
+	r := m.active
+	if a.settled && r != nil && r.call.ID() == a.id {
+		result.Peer = r.call.Peer()
+		result.State = r.call.State()
+	}
+	m.mu.Unlock()
+	return result, nil
+}
+
+// CancelAttempt consumes a not-yet-received request and fences late dial success.
+// It never creates or retries an offer. Retention has the same bounded lifetime
+// as outbound dedupe; the Min coordinator additionally owns durable intents.
+func (m *Manager) CancelAttempt(requestID string) (Status, error) {
+	if strings.TrimSpace(requestID) == "" || len(requestID) > 128 {
+		return Status{}, ErrAttemptUsed
+	}
+	m.mu.Lock()
+	a := m.used[requestID]
+	if a == nil {
+		if len(m.used) >= 256 {
+			m.mu.Unlock()
+			return Status{}, ErrAttemptUsed
+		}
+		a = &attempt{settled: true}
+		m.used[requestID] = a
+	}
+	a.canceled = true
+	cancel, id, settled := a.cancel, a.id, a.settled
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if settled && id != "" {
+		if err := m.Hangup(id); err != nil && !errors.Is(err, ErrCallNotFound) {
+			return Status{}, err
+		}
+	}
+	return m.AttemptStatus(requestID)
 }
 
 func (m *Manager) adopt(c handle, direction string) error {
@@ -263,6 +348,12 @@ func (m *Manager) finish(r *record) {
 func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
+	for _, a := range m.used {
+		a.canceled = true
+		if a.cancel != nil {
+			a.cancel()
+		}
+	}
 	r := m.active
 	m.mu.Unlock()
 	if r != nil {

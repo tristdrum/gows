@@ -496,7 +496,7 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	})
 
 	if err := e.sendOffer(ctx, callID, offer); err != nil {
-		return nil, fmt.Errorf("send offer: %w", err)
+		return call, fmt.Errorf("send offer: %w", err)
 	}
 	e.c.log.Info().Str("call_id", callID).Bool("video", opts.Video).Msg("offer sent; media starts when the relay endpoint arrives")
 	e.c.diag.Emit("meta", map[string]any{"event": "offer_sent", "call_id": callID, "peer_lid": peerLID.String(), "direction": "out", "video": opts.Video})
@@ -508,7 +508,13 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 func (e *engine) sendOffer(ctx context.Context, callID string, offer waBinary.Node) error {
 	err := e.transmitCallNode(ctx, offer)
 	if err != nil {
-		e.finishCall(callID, "offer_send_failed")
+		// The offer may be on the wire. Terminate once using the retained
+		// creator/peer metadata before retiring it; never retry the offer.
+		if m := e.lookup(callID); m != nil && m.call != nil {
+			_ = e.hangup(m.call)
+		} else {
+			e.finishCall(callID, "offer_send_failed")
+		}
 	}
 	return err
 }
@@ -753,7 +759,9 @@ func (e *engine) hangup(c *Call) error {
 	term := signaling.BuildTerminate(&signaling.TerminateParams{CallID: c.id, To: to, CallCreator: creator})
 	term.Attrs["id"] = e.nextCallNodeID()
 	e.finishCall(c.id, "hangup")
-	if err := e.transmitCallNode(context.Background(), term); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := e.transmitCallNode(ctx, term); err != nil {
 		return fmt.Errorf("send terminate: %w", err)
 	}
 	return nil

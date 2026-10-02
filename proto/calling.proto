@@ -11,7 +11,7 @@ message CallControl {
   string session = 1;
   string call_id = 2;
   string peer = 3;
-  string action = 4; // dial, accept, hangup, status
+  string action = 4; // dial, accept, hangup, status, cancel attempt
   string request_id = 5; // single-use outbound attempt identity
 }
 message CallStatus {
