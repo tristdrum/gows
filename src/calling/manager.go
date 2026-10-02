@@ -163,6 +163,13 @@ func (m *Manager) Dial(ctx context.Context, peer, requestID string) (Status, err
 	// Cancellation may arrive between the first check and adoption.
 	m.mu.Lock()
 	canceled = a.canceled || m.closed
+	// Linearize successful settlement with the last cancellation check. A
+	// later cancel must see settled=true and owns hangup of the adopted call.
+	if err == nil && !canceled {
+		a.settled = true
+		a.cancel = nil
+		m.dialing = false
+	}
 	m.mu.Unlock()
 	if err == nil && canceled {
 		_ = m.Hangup(c.ID())
@@ -171,11 +178,13 @@ func (m *Manager) Dial(ctx context.Context, peer, requestID string) (Status, err
 	if err != nil && c != nil && c.State() != "ended" {
 		_ = c.Hangup()
 	}
-	m.mu.Lock()
-	a.settled = true
-	a.cancel = nil
-	m.dialing = false
-	m.mu.Unlock()
+	if err != nil {
+		m.mu.Lock()
+		a.settled = true
+		a.cancel = nil
+		m.dialing = false
+		m.mu.Unlock()
+	}
 	if err != nil {
 		return Status{}, err
 	}

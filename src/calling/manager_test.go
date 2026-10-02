@@ -3,6 +3,8 @@ package calling
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -76,6 +78,56 @@ func TestAttemptLookupRecoversActiveIDAndCancelClosesIt(t *testing.T) {
 	state, err = m.CancelAttempt("response-lost")
 	if err != nil || state.ID != "call" || state.State != "ended" {
 		t.Fatalf("recovered call not canceled: %+v %v", state, err)
+	}
+}
+
+type settlementCall struct {
+	fakeCall
+	mu                 sync.Mutex
+	reads              atomic.Int32
+	returning, release chan struct{}
+}
+
+func (c *settlementCall) State() string {
+	if c.reads.Add(1) == 3 {
+		close(c.returning)
+		<-c.release
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ended {
+		return "ended"
+	}
+	return "ringing"
+}
+func (c *settlementCall) Hangup() error {
+	c.mu.Lock()
+	c.ended = true
+	fn := c.end
+	c.mu.Unlock()
+	if fn != nil {
+		fn("hangup")
+	}
+	return nil
+}
+
+type settlementDialer struct{ call *settlementCall }
+
+func (d settlementDialer) Dial(context.Context, string) (handle, error) { return d.call, nil }
+func TestCancelAtSuccessfulDialSettlementEndsAdoptedCall(t *testing.T) {
+	c := &settlementCall{fakeCall: fakeCall{id: "settling", peer: "1@lid"}, returning: make(chan struct{}), release: make(chan struct{})}
+	m := newManager(settlementDialer{c}, nil)
+	done := make(chan struct{})
+	go func() { _, _ = m.Dial(context.Background(), "1@s.whatsapp.net", "settlement"); close(done) }()
+	<-c.returning // Final result read is paused after the successful settlement.
+	state, err := m.CancelAttempt("settlement")
+	if err != nil || state.State != "ended" {
+		t.Fatalf("settled cancellation not terminal: %+v %v", state, err)
+	}
+	close(c.release)
+	<-done
+	if _, err = m.Status(c.ID()); !errors.Is(err, ErrCallNotFound) {
+		t.Fatal("adopted call survived cancellation at settlement")
 	}
 }
 
