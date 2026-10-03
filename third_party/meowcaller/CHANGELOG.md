@@ -7,6 +7,13 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### api/deferred-accept — `implemented`
+
+- Retain the first direct-call setup mute signal until the application answers.
+  Both event orderings and concurrent arrival send one call-bound acceptance;
+  duplicate answers preserve an active call. Focused and full engine race tests
+  pass. New live device proof is pending.
+
 ### media/group-runtime — `KAT-verified`
 
 - Hardened live group-call teardown by closing and detaching audio endpoints,

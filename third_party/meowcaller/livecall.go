@@ -763,8 +763,9 @@ func (c *Call) onMuteStateFn() func(bool) {
 
 // setPhase advances the call's phase and fires OnStateChange (used by the engine).
 func (c *Call) setPhase(next CallPhase) {
+	// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/livecall.go#L705-L718
 	c.mu.Lock()
-	if c.phase == next {
+	if c.phase == next || c.phase == CallPhaseEnded {
 		c.mu.Unlock()
 		return
 	}

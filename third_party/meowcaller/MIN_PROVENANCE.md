@@ -11,3 +11,9 @@ ended handle for attempt-ID recovery. No offer is retried, and no diagnostics or
 permission expansion is enabled. Focused regression tests accompany these patches.
 The complete upstream source/tests are retained for reproducible maintenance;
 upstream AGENTS guidance applies when editing this directory.
+
+The deferred-accept patch retains the first authenticated setup mute signal and
+requires both that signal and application Answer before sending one acceptance.
+Observed destination/creator metadata is preserved, later mute and duplicate
+Answer never resend, and the existing signaling sender is reused. Ordering and
+concurrency regressions pass; real WhatsApp media remains a separate acceptance gate.

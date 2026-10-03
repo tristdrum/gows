@@ -76,6 +76,10 @@ type engineCall struct {
 
 	// The callee <accept> is deferred until the caller's <mute_v2> arrives.
 	acceptPending bool
+	acceptReady   bool
+	acceptSent    bool
+	acceptTo      types.JID
+	acceptCreator types.JID
 }
 
 // newEngine creates the engine for a Client.
@@ -680,6 +684,7 @@ func (e *engine) sendPreaccept(callID string, to, creator types.JID, video bool)
 // <preaccept> was already sent eagerly when the offer arrived, so Answer only commits to
 // the call. Media comes up once callKey+relay are both known.
 func (e *engine) answer(c *Call) error {
+	// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/engine.go#L618-L645
 	m := e.lookup(c.id)
 	if m == nil {
 		return fmt.Errorf("meowcaller: unknown call %s", c.id)
@@ -698,25 +703,40 @@ func (e *engine) answer(c *Call) error {
 		return nil
 	}
 	e.mu.Lock()
+	if e.calls[c.id] != m || m.call != c || c.State() == CallPhaseEnded {
+		e.mu.Unlock()
+		return errors.New("meowcaller: call has ended")
+	}
+	if m.acceptPending || m.acceptSent {
+		e.mu.Unlock()
+		return nil
+	}
 	m.acceptPending = true
+	ready := m.acceptReady
 	e.mu.Unlock()
 
 	c.setPhase(CallPhaseConnecting)
+	if ready {
+		e.sendAccept(c.id)
+	}
 	e.maybeStartMedia(c.id)
 	return nil
 }
 
 // sendAccept sends the deferred callee <accept> (once), in the WA-Web format (metadata +
 // single rate — the peer keeps the call alive with this; capability+both-rates fails).
-func (e *engine) sendAccept(callID string, to, creator types.JID) {
+func (e *engine) sendAccept(callID string) {
+	// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/engine.go#L648-L671
 	e.mu.Lock()
 	m := e.calls[callID]
-	if m == nil || !m.acceptPending {
+	if m == nil || !m.acceptPending || !m.acceptReady || m.acceptSent {
 		e.mu.Unlock()
 		return
 	}
 	isVideo := m.localVideo || m.remoteVideo
+	to, creator := m.acceptTo, m.acceptCreator
 	m.acceptPending = false
+	m.acceptSent = true
 	e.mu.Unlock()
 
 	accept := signaling.BuildAccept(&signaling.AcceptParams{
@@ -725,8 +745,8 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		Metadata:   waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
 		Video:      isVideo,
 	})
-	accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
-	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), accept); err != nil {
+	accept.Attrs["id"] = e.nextCallNodeID()
+	if err := e.transmitCallNode(context.Background(), accept); err != nil {
 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
 		return
 	}
@@ -1103,6 +1123,12 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		// (e.g. 1→0) and must not re-run the accept path on an already-accepted call.
 		e.mu.Lock()
 		m := e.calls[callID]
+		// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/engine.go#L1016-L1050
+		if m != nil && m.direction == CallDirectionIncoming && !m.group && !m.acceptReady && !m.acceptSent {
+			m.acceptReady = true
+			m.acceptTo = callNode.AttrGetter().JID("from")
+			m.acceptCreator = mv.JID("call-creator")
+		}
 		pending := m != nil && m.acceptPending
 		e.mu.Unlock()
 		if m != nil && m.call != nil {
@@ -1123,7 +1149,7 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 			Str("mute_state", muteState).
 			Bool("muted", muted).
 			Msg("first mute_v2 received; sending deferred accept")
-		e.sendAccept(callID, callNode.AttrGetter().JID("from"), mv.JID("call-creator"))
+		e.sendAccept(callID)
 		return false
 	case "video":
 		// Acknowledge the <video> stanza with type="video" — the mid-call video-upgrade
