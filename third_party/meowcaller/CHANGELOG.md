@@ -5,6 +5,15 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 **validation state**: `scaffolded` (signatures + KAT test, bodies are TODO),
 `implemented` (bodies written), or `KAT-verified` (its reference vector passes).
 
+### direct-answer-accept — `implemented`
+
+- Send direct acceptance once on explicit application Answer without a mute gate.
+- Retain the original offering destination and creator; cancel a pending acceptance
+  when the current call ends. Retire failed acceptance without retry; guard cleanup
+  and successful media startup against a replacement registry entry or handle.
+- Focused offline race regressions pass. Actual device interoperability and duplex
+  media remain unverified; outgoing transport negotiation is unchanged.
+
 ## [Unreleased]
 
 ### api/inbound-offer-receipt — `implemented`

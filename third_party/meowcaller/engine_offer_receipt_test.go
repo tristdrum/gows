@@ -132,7 +132,7 @@ func TestInboundOfferReceiptDuplicatesAndReorderingDoNotChangePhase(t *testing.T
 		}
 		eng.onCallRaw(&offer)
 		eng.onCallRaw(&offer)
-		if count != 2 || call.State() != phase || eng.lookup(call.ID()).acceptPending || eng.lookup(call.ID()).acceptReady || eng.lookup(call.ID()).acceptSent || eng.lookup(call.ID()).started {
+		if count != 2 || call.State() != phase || eng.lookup(call.ID()).acceptPending || eng.lookup(call.ID()).acceptSent || eng.lookup(call.ID()).started {
 			t.Fatal("duplicate/reordered receipt altered the call state")
 		}
 	}
@@ -185,7 +185,7 @@ func TestInboundOfferReceiptConcurrentDuplicatesKeepCallState(t *testing.T) {
 		}()
 	}
 	work.Wait()
-	if receipts.Load() != 32 || call.State() != CallPhaseRinging || m.acceptPending || m.acceptReady || m.acceptSent || m.started {
+	if receipts.Load() != 32 || call.State() != CallPhaseRinging || m.acceptPending || m.acceptSent || m.started {
 		t.Fatal("concurrent receipts altered state or started media")
 	}
 }

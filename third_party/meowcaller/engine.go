@@ -41,7 +41,7 @@ type engine struct {
 
 // engineCall is the engine's per-call state: the public Call handle plus the inputs
 // needed to bring media up (the decrypted callKey and the relay endpoint, both of
-// which can arrive separately), the media goroutine cancel handle, and the deferred
+// which can arrive separately), the media goroutine cancel handle, and application
 // accept bookkeeping.
 type engineCall struct {
 	call    *Call
@@ -74,12 +74,10 @@ type engineCall struct {
 	inviteSelfDevice  groupCallDevice
 	invitePeerDevice  groupCallDevice
 
-	// The callee <accept> is deferred until the caller's <mute_v2> arrives.
+	// Direct acceptance is owned by the application's Answer invocation.
 	acceptPending bool
-	acceptReady   bool
 	acceptSent    bool
-	acceptTo      types.JID
-	acceptCreator types.JID
+	acceptCancel  context.CancelFunc
 }
 
 // newEngine creates the engine for a Client.
@@ -679,10 +677,8 @@ func (e *engine) sendPreaccept(callID string, to, creator types.JID, video bool)
 	return nil
 }
 
-// answer accepts an inbound call: it marks the call to accept (the actual <accept> is
-// deferred until the caller's <mute_v2>, which onCallRaw fires) and brings media up. The
-// <preaccept> was already sent eagerly when the offer arrived, so Answer only commits to
-// the call. Media comes up once callKey+relay are both known.
+// answer accepts an inbound call on application intent and brings media up once its
+// call key and relay are known. The preaccept was already sent when the offer arrived.
 func (e *engine) answer(c *Call) error {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/engine.go#L618-L645
 	m := e.lookup(c.id)
@@ -711,33 +707,49 @@ func (e *engine) answer(c *Call) error {
 		e.mu.Unlock()
 		return nil
 	}
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/102ef4084d2a6e8d41a01e01591d1eb0837d370b/src/voip/facade.rs#L457-L465
 	m.acceptPending = true
-	ready := m.acceptReady
 	e.mu.Unlock()
 
 	c.setPhase(CallPhaseConnecting)
-	if ready {
-		e.sendAccept(c.id)
+	if err := e.sendAccept(c); err != nil {
+		return err
 	}
-	e.maybeStartMedia(c.id)
+	e.maybeStartMediaIfCurrent(c.id, m, c)
 	return nil
 }
 
-// sendAccept sends the deferred callee <accept> (once), in the WA-Web format (metadata +
+// sendAccept sends the application-authorized callee <accept> once, in the WA-Web format (metadata +
 // single rate — the peer keeps the call alive with this; capability+both-rates fails).
-func (e *engine) sendAccept(callID string) {
+func (e *engine) sendAccept(call *Call) error {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/engine.go#L648-L671
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/102ef4084d2a6e8d41a01e01591d1eb0837d370b/src/voip/facade.rs#L1568-L1583
+	callID := call.id
 	e.mu.Lock()
 	m := e.calls[callID]
-	if m == nil || !m.acceptPending || !m.acceptReady || m.acceptSent {
+	if m == nil || m.call != call || call.State() == CallPhaseEnded {
 		e.mu.Unlock()
-		return
+		return errors.New("meowcaller: call has ended")
+	}
+	if !m.acceptPending || m.acceptSent {
+		e.mu.Unlock()
+		return nil
 	}
 	isVideo := m.localVideo || m.remoteVideo
-	to, creator := m.acceptTo, m.acceptCreator
+	to, creator := m.from, m.creator
 	m.acceptPending = false
 	m.acceptSent = true
+	ctx, cancel := context.WithCancel(context.Background())
+	m.acceptCancel = cancel
 	e.mu.Unlock()
+	defer func() {
+		cancel()
+		e.mu.Lock()
+		if e.calls[callID] == m {
+			m.acceptCancel = nil
+		}
+		e.mu.Unlock()
+	}()
 
 	accept := signaling.BuildAccept(&signaling.AcceptParams{
 		CallID: callID, To: to, CallCreator: creator,
@@ -746,11 +758,18 @@ func (e *engine) sendAccept(callID string) {
 		Video:      isVideo,
 	})
 	accept.Attrs["id"] = e.nextCallNodeID()
-	if err := e.transmitCallNode(context.Background(), accept); err != nil {
-		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
-		return
+	if err := e.transmitCallNode(ctx, accept); err != nil {
+		e.finishCallIfCurrent(callID, m, call, "accept_send_failed")
+		return fmt.Errorf("meowcaller: send accept: %w", err)
 	}
-	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted (after mute_v2)")
+	e.mu.Lock()
+	current := e.calls[callID] == m && m.call == call && call.State() != CallPhaseEnded
+	e.mu.Unlock()
+	if !current {
+		return errors.New("meowcaller: call has ended")
+	}
+	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted on application Answer")
+	return nil
 }
 
 // reject declines an inbound call.
@@ -825,7 +844,7 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
 }
 
 // onRelayLatency answers the caller's relaylatency probes (the callee's half of the
-// relay election). It does NOT send the accept — that is deferred until <mute_v2>.
+// relay election). Acceptance remains owned by application Answer.
 func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	m := e.lookup(ev.CallID)
 	if m == nil || m.direction != CallDirectionIncoming {
@@ -1082,9 +1101,6 @@ func (e *engine) onCallAck(ack *waBinary.Node) {
 	e.onRelay(callID, ack)
 }
 
-// onCallRaw sees every raw <call> node before whatsmeow processes it. It fires the
-// deferred <accept> when the caller's first <mute_v2> arrives (whatsmeow surfaces no
-// mute event, so this is the only place we see it).
 // onCallRaw inspects a raw <call> node before whatsmeow processes it. It returns true when
 // it has fully handled the node (including sending the appropriate ack), so the caller skips
 // whatsmeow's generic typeless ack.
@@ -1120,38 +1136,13 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		}
 		muteState := mv.String("mute-state")
 		muted := muteState == "1"
-		// The deferred <accept> fires on the FIRST mute_v2 only — it arrives right after
-		// the relaylatency/transport. Later mute_v2 nodes are in-call mute-state changes
-		// (e.g. 1→0) and must not re-run the accept path on an already-accepted call.
-		e.mu.Lock()
-		m := e.calls[callID]
-		// Source of truth: https://github.com/purpshell/meowcaller/blob/27a3c6b18657614c9ec2ed16dfc497eff11de6ec/engine.go#L1016-L1050
-		if m != nil && m.direction == CallDirectionIncoming && !m.group && !m.acceptReady && !m.acceptSent {
-			m.acceptReady = true
-			m.acceptTo = callNode.AttrGetter().JID("from")
-			m.acceptCreator = mv.JID("call-creator")
-		}
-		pending := m != nil && m.acceptPending
-		e.mu.Unlock()
+		// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/102ef4084d2a6e8d41a01e01591d1eb0837d370b/src/voip/facade.rs#L3940-L4008
+		m := e.lookup(callID)
 		if m != nil && m.call != nil {
 			if fn := m.call.onMuteStateFn(); fn != nil {
 				fn(muted)
 			}
 		}
-		if !pending {
-			e.c.log.Debug().
-				Str("call_id", callID).
-				Str("mute_state", muteState).
-				Bool("muted", muted).
-				Msg("mute_v2 observed; call not awaiting accept")
-			return false
-		}
-		e.c.log.Info().
-			Str("call_id", callID).
-			Str("mute_state", muteState).
-			Bool("muted", muted).
-			Msg("first mute_v2 received; sending deferred accept")
-		e.sendAccept(callID)
 		return false
 	case "video":
 		// Acknowledge the <video> stanza with type="video" — the mid-call video-upgrade
@@ -1282,18 +1273,29 @@ func (e *engine) onTerminate(callID, reason string) {
 }
 
 func (e *engine) finishCall(callID, reason string) {
+	e.finishCallIfCurrent(callID, nil, nil, reason)
+}
+
+func (e *engine) finishCallIfCurrent(callID string, expected *engineCall, expectedCall *Call, reason string) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/102ef4084d2a6e8d41a01e01591d1eb0837d370b/src/voip/facade.rs#L1568-L1583
 	if callID == "" {
 		return
 	}
 	e.mu.Lock()
 	m := e.calls[callID]
+	if expected != nil && (m != expected || m.call != expectedCall) {
+		e.mu.Unlock()
+		return
+	}
 	if m != nil {
 		delete(e.calls, callID)
 	}
-	var cancel, waitingRoomCancel context.CancelFunc
+	var cancel, waitingRoomCancel, acceptCancel context.CancelFunc
 	var call *Call
 	var receivers *participantReceiveRegistry
 	if m != nil {
+		acceptCancel = m.acceptCancel
+		m.acceptCancel = nil
 		cancel = m.cancel
 		m.cancel = nil
 		waitingRoomCancel = m.waitingRoomCancel
@@ -1305,6 +1307,9 @@ func (e *engine) finishCall(callID, reason string) {
 		call = m.call
 	}
 	e.mu.Unlock()
+	if acceptCancel != nil {
+		acceptCancel()
+	}
 	if cancel != nil {
 		cancel()
 	}

@@ -41,9 +41,14 @@ type videoReceiveState struct {
 // maybeStartMedia launches the media loop for callID once both the callKey and the relay
 // endpoint are known. It is idempotent — the loop starts exactly once per call.
 func (e *engine) maybeStartMedia(callID string) {
+	e.maybeStartMediaIfCurrent(callID, nil, nil)
+}
+
+func (e *engine) maybeStartMediaIfCurrent(callID string, expected *engineCall, expectedCall *Call) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/102ef4084d2a6e8d41a01e01591d1eb0837d370b/src/voip/facade.rs#L2456-L2480
 	e.mu.Lock()
 	m := e.calls[callID]
-	if m == nil || m.started {
+	if m == nil || m.started || (expected != nil && (m != expected || m.call != expectedCall)) {
 		e.mu.Unlock()
 		return
 	}
