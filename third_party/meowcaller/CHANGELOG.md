@@ -16,6 +16,14 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### api/native-signal-observation — `implemented`
+
+- Observe raw received control actions, successful sends, correlated offer acks,
+  and parsed relay arrival using fixed categories and metadata only.
+- Optional callbacks run outside engine/client locks; private correlation IDs are
+  excluded from serialization. Offline content/privacy and race regressions pass.
+
+
 ### api/inbound-offer-receipt — `implemented`
 
 - Restore the dedicated inbound offer receipt from the working CLI implementation,

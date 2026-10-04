@@ -201,7 +201,10 @@ func BuildSession(
 	// Unrelated sessions retain their existing raw stanza handlers.
 	for _, name := range strings.Split(os.Getenv("GOWS_CALLING_SESSIONS"), ",") {
 		if name = strings.TrimSpace(name); name != "" && name == ctx.Value("name") {
-			gows.Voice = calling.New(client, func(event calling.Event) { gows.emitEvent(event) })
+			signalLog := waLog.Stdout("NativeVoice", "INFO", false)
+			gows.Voice = calling.New(client, func(event calling.Event) { gows.emitEvent(event) }, func(sample calling.SignalDiagnostic) {
+				signalLog.Infof("native_signal kind=%s direction=%s phase=%s elapsed_ms=%d transport_type=%s end_category=%s relay_present=%t media_ready=%t", sample.Kind, sample.Direction, sample.Phase, sample.ElapsedMs, sample.TransportType, sample.EndCategory, sample.RelayPresent, sample.MediaReady)
+			})
 			break
 		}
 	}

@@ -50,8 +50,9 @@ type engineCall struct {
 	selfLID string
 	peerLID string
 
-	creator types.JID // call-creator JID (for accept/relaylatency)
-	from    types.JID // the <call> "from" — where stanzas are addressed
+	creator       types.JID // call-creator JID (for accept/relaylatency)
+	from          types.JID // the <call> "from" — where stanzas are addressed
+	offerStanzaID string
 
 	direction         CallDirection
 	codec             AudioCodec   // audio codec for this call, selected from voip_settings (MLow default)
@@ -229,7 +230,11 @@ func (e *engine) transmitCallNode(ctx context.Context, node waBinary.Node) error
 	if e.sendCallNode == nil {
 		return errors.New("meowcaller: call signaling is unavailable")
 	}
-	return e.sendCallNode(ctx, node)
+	if err := e.sendCallNode(ctx, node); err != nil {
+		return err
+	}
+	e.observeSignalNode(&node, true)
+	return nil
 }
 
 func (e *engine) nextCallNodeID() string {
@@ -483,6 +488,7 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	m.creator = self
 	m.from = peerLID
 	m.direction = CallDirectionOutgoing
+	m.offerStanzaID = offer.AttrGetter().String("id")
 	m.localVideo = opts.Video
 	m.remoteVideo = opts.Video
 	m.inviteSelfDevice = groupCallDevice{
@@ -594,7 +600,11 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		}
 	}
 	e.applyVoipSettingsCodec(m, ev.Data, ev.CallID)
+	hasRelay := m.relay != nil
 	e.mu.Unlock()
+	if hasRelay {
+		e.observeSignal(ev.CallID, "relay_arrival", "")
+	}
 	if isVideo {
 		e.c.log.Info().Str("call_id", ev.CallID).Msg("inbound call advertises video")
 	}
@@ -670,7 +680,7 @@ func (e *engine) sendPreaccept(callID string, to, creator types.JID, video bool)
 		[]string{"16000"},
 		video,
 	)
-	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), pre); err != nil {
+	if err := e.transmitCallNode(context.Background(), pre); err != nil {
 		return fmt.Errorf("send preaccept: %w", err)
 	}
 	e.c.log.Info().Str("call_id", callID).Msg("preaccepted (preparation; awaiting Answer/Reject)")
@@ -831,6 +841,7 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
 		}
 	}
 	e.mu.Unlock()
+	e.observeSignal(callID, "relay_arrival", "")
 	if rekeyPeer != nil {
 		if err := rekeyPeer(peerLID); err != nil {
 			e.c.log.Warn().Err(err).Str("call_id", callID).Str("peer_lid", peerLID).
@@ -877,7 +888,7 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 			AddressBytes: p.addr,
 		})
 		resp.Attrs["id"] = e.c.wa.GenerateMessageID()
-		if err := e.c.wa.DangerousInternals().SendNode(context.Background(), resp); err != nil {
+		if err := e.transmitCallNode(context.Background(), resp); err != nil {
 			e.c.log.Error().Err(err).Str("call_id", ev.CallID).Msg("send relaylatency failed")
 			return
 		}
@@ -1065,6 +1076,7 @@ func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, call
 // allocation arrives here (whatsmeow otherwise drops the ack), which is what lets the
 // caller bring up media. An error ack tears the call down.
 func (e *engine) onCallAck(ack *waBinary.Node) {
+	e.observeOfferAck(ack)
 	if errCode := ack.AttrGetter().String("error"); errCode != "" {
 		callID := ""
 		if en := findChild(ack, "error"); en != nil {
@@ -1105,6 +1117,7 @@ func (e *engine) onCallAck(ack *waBinary.Node) {
 // it has fully handled the node (including sending the appropriate ack), so the caller skips
 // whatsmeow's generic typeless ack.
 func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
+	e.observeSignalNode(callNode, false)
 	kids := callNode.GetChildren()
 	if len(kids) == 0 {
 		return false

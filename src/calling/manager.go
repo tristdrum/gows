@@ -58,6 +58,7 @@ type nativeCall struct{ call *meowcaller.Call }
 func (c nativeCall) ID() string                   { return c.call.ID() }
 func (c nativeCall) Peer() string                 { return c.call.Peer().ToNonAD().String() }
 func (c nativeCall) State() string                { return phase(c.call.State()) }
+func (c nativeCall) RelayPresent() bool           { return c.call.HasRelayAllocation() }
 func (c nativeCall) Unsupported() bool            { return c.call.IsVideo() || c.call.IsGroup() }
 func (c nativeCall) Answer() error                { return c.call.Answer() }
 func (c nativeCall) Reject() error                { return c.call.Reject() }
@@ -100,6 +101,7 @@ type Manager struct {
 	mu              sync.Mutex
 	eventMu         sync.Mutex
 	dialer          dialer
+	probe           *nativeSignalProbe
 	emit            func(Event)
 	active          *record
 	dialing, closed bool
@@ -108,9 +110,13 @@ type Manager struct {
 
 // New installs the calling adapter before the existing client connects.
 // The caller must gate construction to explicitly enabled sessions.
-func New(client *whatsmeow.Client, emit func(Event)) *Manager {
+func New(client *whatsmeow.Client, emit func(Event), diagnostics ...func(SignalDiagnostic)) *Manager {
 	voice := meowcaller.NewClient(client)
 	m := newManager(nativeDialer{voice}, emit)
+	if len(diagnostics) > 0 && diagnostics[0] != nil {
+		m.probe = &nativeSignalProbe{now: time.Now, emit: diagnostics[0]}
+		voice.OnSignalObservation(m.probe.observe)
+	}
 	voice.OnIncomingCall(func(c *meowcaller.Call) {
 		m.adopt(nativeCall{c}, "inbound")
 	})
@@ -267,7 +273,8 @@ func (m *Manager) adopt(c handle, direction string) error {
 		}
 	})
 	m.mu.Unlock()
-	c.OnEnd(func(string) { m.finish(r) })
+	m.probe.admit(c, direction)
+	c.OnEnd(func(reason string) { m.probe.end(c.ID(), reason); m.finish(r) })
 	c.OnState(func(state string) { m.sendEvent(r, state) })
 	m.sendEvent(r, c.State())
 	if c.State() == "ended" {

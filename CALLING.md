@@ -24,6 +24,19 @@ attempt is bounded to five seconds; never turn an uncertain outcome into redial.
 relay credentials and provider signaling payloads are never emitted. The caller
 must verify identity and account permissions before accepting or dialing.
 
+Opted-in sessions also emit `native_signal` diagnostics from native raw receive
+and successful transmit boundaries. Categories are fixed: received/sent offer,
+preaccept, relaylatency, transport, accept, mute, terminate and reject; sent offer
+receipt; offer acknowledgement; relay arrival; and a classified end reason.
+Fields are direction, phase, elapsed milliseconds, transport type (`1`, `3`, `9`
+or `other`), relay presence and media readiness. Call/stanza identities are used
+privately for admission/correlation and are never logged; wire contents, JIDs,
+keys, tokens, SDP and audio are excluded. Up to sixteen early observations are
+retained until admission, with their original time/state, then unrelated calls
+are discarded. Buffer overflow cannot establish complete setup ordering.
+Relay presence means parsed allocation data exists; media readiness means the
+native call reached active after decoded audio. Neither establishes duplex.
+
 The media implementation is the MIT-licensed
 [purpshell/meowcaller](https://github.com/purpshell/meowcaller/tree/27a3c6b18657614c9ec2ed16dfc497eff11de6ec),
 pinned to `27a3c6b18657614c9ec2ed16dfc497eff11de6ec`. Its raw stanza hook uses

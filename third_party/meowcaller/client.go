@@ -29,6 +29,7 @@ type Client struct {
 
 	mu             sync.Mutex
 	onIncomingCall func(*Call)
+	onSignal       func(SignalObservation)
 }
 
 // CallOptions controls media negotiated for an outbound call.
