@@ -1094,6 +1094,8 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		return false
 	}
 	switch kids[0].Tag {
+	case "offer":
+		e.sendOfferReceipt(callNode)
 	case "group_update", "enc_rekey", "waiting_room_update", "user_action", "screen_share":
 		// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L31-L56
 		ack, ok := signaling.BuildCallControlAck(callNode, kids[0].Tag)

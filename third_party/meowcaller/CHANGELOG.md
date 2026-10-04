@@ -7,6 +7,13 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### api/inbound-offer-receipt — `implemented`
+
+- Restore the dedicated inbound offer receipt from the working CLI implementation,
+  retaining the original stanza ID, call identity and device-address namespace.
+  Generic acknowledgements and application-controlled answering are preserved.
+  Offline wire-shape and engine race tests pass; fresh live device proof is pending.
+
 ### api/deferred-accept — `implemented`
 
 - Retain the first direct-call setup mute signal until the application answers.
