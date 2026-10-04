@@ -97,11 +97,11 @@ func (s *Server) Media(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaP
 	if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ready"}); err != nil {
 		return err
 	}
-	return relayCallMedia(stream, first, media.Input, media.Done, media.Write, media.Clear)
+	return relayCallMedia(stream, first, media.Input, media.Done, media.Write, media.Clear, media.TerminalError)
 }
 
 func relayCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPacket], first *pb.MediaPacket,
-	input <-chan []byte, done <-chan struct{}, write func([]byte) error, clear func()) error {
+	input <-chan []byte, done <-chan struct{}, write func([]byte) error, clear func(), terminalError func() error) error {
 	errorsCh := make(chan error, 1)
 	go func() {
 		var sequence uint64
@@ -147,10 +147,16 @@ func relayCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPack
 			return stream.Context().Err()
 		case err = <-errorsCh:
 			if errors.Is(err, io.EOF) {
+				if terminalErr := terminalError(); terminalErr != nil {
+					return callError(terminalErr)
+				}
 				return nil
 			}
 			return err
 		case <-done:
+			if terminalErr := terminalError(); terminalErr != nil {
+				return callError(terminalErr)
+			}
 			return stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ended"})
 		case data := <-input:
 			sequence++

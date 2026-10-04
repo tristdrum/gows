@@ -379,13 +379,15 @@ func (m *Manager) Close() {
 }
 
 type Stream struct {
-	Input   chan []byte
-	Done    chan struct{}
-	output  *pcmQueue
-	manager *Manager
-	callID  string
-	once    sync.Once
-	failure sync.Once
+	Input       chan []byte
+	Done        chan struct{}
+	output      *pcmQueue
+	manager     *Manager
+	callID      string
+	once        sync.Once
+	failure     sync.Once
+	terminalMu  sync.Mutex
+	terminalErr error
 }
 
 func (m *Manager) Open(id string) (*Stream, error) {
@@ -409,7 +411,7 @@ func (s *Stream) Write(data []byte) error { return s.output.Push(data) }
 func (s *Stream) Clear()                  { s.output.Clear() }
 func (s *Stream) WriteFrame(frame []float32) error {
 	if len(frame) != 960 {
-		s.fail()
+		s.fail(ErrInvalidPCM)
 		return ErrInvalidPCM
 	}
 	select {
@@ -421,12 +423,33 @@ func (s *Stream) WriteFrame(frame []float32) error {
 	case s.Input <- encodePCM(frame):
 		return nil
 	default:
-		s.fail()
+		s.fail(ErrMediaBackpressure)
 		return ErrMediaBackpressure
 	}
 }
-func (s *Stream) fail()   { s.failure.Do(func() { go s.Close() }) }
-func (s *Stream) finish() { s.once.Do(func() { s.output.Close(); close(s.Done) }) }
+func (s *Stream) fail(err error) {
+	s.failure.Do(func() {
+		s.finishWithError(err)
+		go s.Close()
+	})
+}
+func (s *Stream) finish() { s.finishWithError(nil) }
+func (s *Stream) finishWithError(err error) {
+	s.once.Do(func() {
+		s.terminalMu.Lock()
+		s.terminalErr = err
+		s.terminalMu.Unlock()
+		s.output.Close()
+		close(s.Done)
+	})
+}
+
+// TerminalError returns the first owned sink failure, or nil for a normal end.
+func (s *Stream) TerminalError() error {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	return s.terminalErr
+}
 func (s *Stream) Close() error {
 	s.finish()
 	err := s.manager.Hangup(s.callID)

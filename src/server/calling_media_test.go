@@ -58,7 +58,7 @@ func TestMediaOwnedOutputEndBeforeDoneNotificationClosesNormally(t *testing.T) {
 		writes++
 		<-outputClosed
 		return io.EOF
-	}, func() {})
+	}, func() {}, func() error { return nil })
 	if err != nil || writes != 1 {
 		t.Fatalf("owned output end became transport failure: code=%s writes=%d", status.Code(err), writes)
 	}
@@ -72,7 +72,7 @@ func TestMediaOwnedDoneSendsTerminalPacket(t *testing.T) {
 	err := relayCallMedia(stream, first, nil, done, func([]byte) error {
 		t.Fatal("terminal stream accepted PCM")
 		return nil
-	}, func() {})
+	}, func() {}, func() error { return nil })
 	if err != nil || len(stream.sent) != 1 || stream.sent[0].Kind != "ended" || stream.sent[0].CallId != first.CallId {
 		t.Fatal("owned end did not emit its exact terminal packet")
 	}
@@ -93,7 +93,7 @@ func TestMediaRealWriteFailuresRemainGRPCErrors(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			stream, first := newMediaTestStream(t)
 			err := relayCallMedia(stream, first, nil, make(chan struct{}),
-				func([]byte) error { return test.err }, func() {})
+				func([]byte) error { return test.err }, func() {}, func() error { return nil })
 			if status.Code(err) != test.code {
 				t.Fatalf("write failure changed category: %s", status.Code(err))
 			}
@@ -122,7 +122,7 @@ func TestMediaChangedIdentitySequenceAndCommandsRemainInvalid(t *testing.T) {
 			err := relayCallMedia(stream, first, nil, make(chan struct{}), func([]byte) error {
 				t.Error("invalid packet reached PCM writer")
 				return nil
-			}, func() { t.Error("invalid clear reached media") })
+			}, func() { t.Error("invalid clear reached media") }, func() error { return nil })
 			if status.Code(err) != codes.InvalidArgument {
 				t.Fatalf("invalid packet changed category: %s", status.Code(err))
 			}
