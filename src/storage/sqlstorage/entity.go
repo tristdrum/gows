@@ -81,7 +81,7 @@ func (kv *EntityRepository[Entity]) UpsertOne(entity *Entity) error {
 }
 
 func (kv *EntityRepository[Entity]) AllBy(conditions []sq.Sqlizer) (entities []*Entity, err error) {
-	return kv.FilterBy(conditions, make([]storage.Sort, 0), storage.Pagination{0, 0})
+	return kv.FilterBy(conditions, make([]storage.Sort, 0), storage.Pagination{Offset: 0, Limit: 0})
 }
 
 func (kv *EntityRepository[Entity]) FilterBy(
@@ -127,7 +127,7 @@ func (kv *EntityRepository[Entity]) Retrieve(sql sq.SelectBuilder, pagination st
 }
 
 func (kv *EntityRepository[Entity]) GetBy(conditions []sq.Sqlizer) (entity *Entity, err error) {
-	entities, err := kv.FilterBy(conditions, make([]storage.Sort, 0), storage.Pagination{0, 1})
+	entities, err := kv.FilterBy(conditions, make([]storage.Sort, 0), storage.Pagination{Offset: 0, Limit: 1})
 	if err != nil {
 		return nil, err
 	}
