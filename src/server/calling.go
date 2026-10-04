@@ -97,6 +97,11 @@ func (s *Server) Media(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaP
 	if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ready"}); err != nil {
 		return err
 	}
+	return relayCallMedia(stream, first, media.Input, media.Done, media.Write, media.Clear)
+}
+
+func relayCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPacket], first *pb.MediaPacket,
+	input <-chan []byte, done <-chan struct{}, write func([]byte) error, clear func()) error {
 	errorsCh := make(chan error, 1)
 	go func() {
 		var sequence uint64
@@ -113,23 +118,29 @@ func (s *Server) Media(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaP
 			sequence = packet.GetSequence()
 			switch packet.GetKind() {
 			case "pcm":
-				recvErr = media.Write(packet.GetPcm())
+				recvErr = write(packet.GetPcm())
 			case "clear":
 				if len(packet.GetPcm()) != 0 {
 					recvErr = calling.ErrInvalidPCM
 				} else {
-					media.Clear()
+					clear()
 				}
 			default:
 				recvErr = calling.ErrInvalidPCM
 			}
 			if recvErr != nil {
-				errorsCh <- callError(recvErr)
+				// The owned output closes before Done is notified. Preserve its
+				// EOF so late PCM cannot turn a normal end into Unavailable.
+				if !errors.Is(recvErr, io.EOF) {
+					recvErr = callError(recvErr)
+				}
+				errorsCh <- recvErr
 				return
 			}
 		}
 	}()
 	var sequence uint64
+	var err error
 	for {
 		select {
 		case <-stream.Context().Done():
@@ -139,9 +150,9 @@ func (s *Server) Media(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaP
 				return nil
 			}
 			return err
-		case <-media.Done:
+		case <-done:
 			return stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ended"})
-		case data := <-media.Input:
+		case data := <-input:
 			sequence++
 			if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "pcm", Pcm: data, Sequence: sequence}); err != nil {
 				return err

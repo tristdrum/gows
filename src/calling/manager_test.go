@@ -3,6 +3,7 @@ package calling
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,29 @@ type fakeCall struct {
 	unsupported bool
 	end         func(string)
 	state       func(string)
+}
+
+func TestOwnedClosedMediaWriteReturnsEOF(t *testing.T) {
+	m := newManager(&fakeDialer{}, nil)
+	result, err := m.Dial(context.Background(), "1@s.whatsapp.net", "owned-end")
+	if err != nil {
+		t.Fatal(err)
+	}
+	media, err := m.Open(result.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = m.Hangup(result.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-media.Done:
+	default:
+		t.Fatal("owned media end not notified")
+	}
+	if err = media.Write(make([]byte, 1920)); !errors.Is(err, io.EOF) {
+		t.Fatal("late PCM did not preserve the owned output EOF")
+	}
 }
 
 type uncertainDialer struct {
