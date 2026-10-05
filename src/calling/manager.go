@@ -16,6 +16,20 @@ var ErrBusy = errors.New("session already has a call")
 var ErrAttemptUsed = errors.New("outbound attempt already used")
 var ErrCallNotFound = errors.New("call not found")
 var ErrMediaOwned = errors.New("call media already has an owner")
+var ErrMediaSendFailed = meowcaller.ErrMediaSendFailed
+
+// MediaSendFailureCause exposes only the fixed typed sender category. Other
+// errors, including similarly worded messages, are not sender observations.
+func MediaSendFailureCause(err error) string {
+	if !errors.Is(err, ErrMediaSendFailed) {
+		return ""
+	}
+	var failure *meowcaller.MediaSendError
+	if errors.As(err, &failure) && failure != nil {
+		return failure.MediaSendCause()
+	}
+	return "other"
+}
 
 type Status struct{ ID, Peer, State, Direction string }
 
@@ -457,4 +471,11 @@ func (s *Stream) Close() error {
 		return nil
 	}
 	return err
+}
+
+// CloseWithError publishes a fixed native media failure before lifecycle Close
+// can publish normal completion. The first terminal error remains authoritative.
+func (s *Stream) CloseWithError(err error) error {
+	s.finishWithError(err)
+	return s.Close()
 }

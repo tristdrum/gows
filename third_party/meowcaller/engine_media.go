@@ -594,7 +594,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				"frame": txCount, "frame_samples": len(frame), "pcm_rms": rmsFloat32(frame),
 				"payload_len": len(payload), "packet_len": len(packet),
 			})
-			if _, err := ch.Send(packet); err != nil {
+			if err := e.sendAudioPacket(callID, m, call, ch, packet); err != nil {
 				return
 			}
 			if txCount++; txCount == 1 {

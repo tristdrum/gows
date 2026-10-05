@@ -21,10 +21,12 @@ const (
 )
 
 type mediaRelayResult struct {
-	kind     mediaReturnKind
-	err      error
-	producer mediaFailureProducer
-	category mediaFailureCategory
+	kind             mediaReturnKind
+	err              error
+	producer         mediaFailureProducer
+	category         mediaFailureCategory
+	outputBacklog    *calling.OutputBacklogObservation
+	sendFailureCause string
 }
 
 type mediaFailureProducer string
@@ -46,7 +48,45 @@ func mediaSinkFailure(producer mediaFailureProducer, err error) mediaRelayResult
 	} else if errors.Is(err, calling.ErrInvalidPCM) {
 		category = mediaCategoryInvalid
 	}
-	return mediaRelayResult{kind: mediaSinkError, err: callError(err), producer: producer, category: category}
+	result := mediaRelayResult{kind: mediaSinkError, producer: producer, category: category, sendFailureCause: calling.MediaSendFailureCause(err)}
+	var backlog *calling.MediaBackpressureError
+	if producer == mediaProducerOutput && category == mediaCategoryBacklog && errors.As(err, &backlog) && backlog != nil {
+		observation := backlog.Observation
+		result.outputBacklog = &observation
+	}
+	result.err = callError(err)
+	return result
+}
+
+func (r mediaRelayResult) sendFailureObservation() string {
+	if r.kind != mediaSinkError || r.producer != mediaProducerOutput || r.category != mediaCategoryNone {
+		return ""
+	}
+	switch r.sendFailureCause {
+	case "closed", "timeout", "other":
+		return r.sendFailureCause
+	default:
+		return ""
+	}
+}
+
+func (r mediaRelayResult) outputBacklogObservation() (calling.OutputBacklogObservation, bool) {
+	if r.kind != mediaSinkError || r.producer != mediaProducerOutput || r.category != mediaCategoryBacklog || r.outputBacklog == nil {
+		return calling.OutputBacklogObservation{}, false
+	}
+	observation := *r.outputBacklog
+	if observation.WaitMS < 0 || observation.QueueCapacity != 2 || observation.QueueDepth < 0 || observation.QueueDepth > observation.QueueCapacity || observation.LastReadAgeMS < -1 {
+		return calling.OutputBacklogObservation{}, false
+	}
+	return observation, true
+}
+
+func mediaTerminalFailure(err error) mediaRelayResult {
+	producer := mediaProducerInput
+	if errors.Is(err, calling.ErrMediaSendFailed) {
+		producer = mediaProducerOutput
+	}
+	return mediaSinkFailure(producer, err)
 }
 
 func (r mediaRelayResult) sinkObservation() (mediaFailureProducer, mediaFailureCategory) {
@@ -84,6 +124,14 @@ func serveOwnedCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.Medi
 			producer, category := result.sinkObservation()
 			format += " failure_producer=%s failure_category=%s"
 			fields = append(fields, producer, category)
+			if cause := result.sendFailureObservation(); cause != "" {
+				format += " send_failure_cause=%s"
+				fields = append(fields, cause)
+			}
+			if observation, ok := result.outputBacklogObservation(); ok {
+				format += " backlog_wait_ms=%d backlog_queue_depth=%d backlog_queue_capacity=%d backlog_readframe_calls_during_wait=%d backlog_last_read_age_ms=%d"
+				fields = append(fields, observation.WaitMS, observation.QueueDepth, observation.QueueCapacity, observation.ReadFrameCallsDuringWait, observation.LastReadAgeMS)
+			}
 		}
 		waLog.Stdout("NativeVoice", "INFO", false).Infof(format, fields...)
 	}()

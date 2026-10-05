@@ -1289,7 +1289,7 @@ func (e *engine) finishCall(callID, reason string) {
 	e.finishCallIfCurrent(callID, nil, nil, reason)
 }
 
-func (e *engine) finishCallIfCurrent(callID string, expected *engineCall, expectedCall *Call, reason string) {
+func (e *engine) finishCallIfCurrent(callID string, expected *engineCall, expectedCall *Call, reason string, mediaFailures ...*MediaSendError) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/102ef4084d2a6e8d41a01e01591d1eb0837d370b/src/voip/facade.rs#L1568-L1583
 	if callID == "" {
 		return
@@ -1345,7 +1345,17 @@ func (e *engine) finishCallIfCurrent(callID string, expected *engineCall, expect
 		player.Stop()
 	}
 	if sink != nil {
-		if err := sink.Close(); err != nil {
+		var err error
+		if failureSink, ok := sink.(interface{ CloseWithError(error) error }); ok && reason == "media_send_failed" {
+			var failure error = ErrMediaSendFailed
+			if len(mediaFailures) > 0 && mediaFailures[0] != nil {
+				failure = mediaFailures[0]
+			}
+			err = failureSink.CloseWithError(failure)
+		} else {
+			err = sink.Close()
+		}
+		if err != nil {
 			e.c.log.Warn().Err(err).Str("call_id", callID).Msg("close call audio sink failed")
 		}
 	}

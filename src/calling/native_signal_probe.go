@@ -107,7 +107,7 @@ func (p *nativeSignalProbe) end(id, reason string) {
 	}
 	category := "other"
 	switch reason {
-	case "normal", "timeout", "busy", "accepted_elsewhere", "hangup", "rejected", "offer_send_failed", "accept_send_failed":
+	case "normal", "timeout", "busy", "accepted_elsewhere", "hangup", "rejected", "offer_send_failed", "accept_send_failed", "media_send_failed":
 		category = reason
 	default:
 		if len(reason) >= 7 && reason[:7] == "server:" {

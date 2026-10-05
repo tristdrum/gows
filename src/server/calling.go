@@ -73,6 +73,8 @@ func callError(err error) error {
 		return status.Error(codes.ResourceExhausted, "media backlog exceeded")
 	case errors.Is(err, calling.ErrInvalidPCM):
 		return status.Error(codes.InvalidArgument, "invalid media frame")
+	case errors.Is(err, calling.ErrMediaSendFailed):
+		return status.Error(codes.Unavailable, "native media send failed")
 	default:
 		return status.Error(codes.Unavailable, "call operation failed")
 	}
@@ -160,14 +162,14 @@ func relayCallMediaResult(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.Med
 		case result := <-errorsCh:
 			if errors.Is(result.err, io.EOF) {
 				if terminalErr := terminalError(); terminalErr != nil {
-					return mediaSinkFailure(mediaProducerInput, terminalErr)
+					return mediaTerminalFailure(terminalErr)
 				}
 				result.err = nil
 			}
 			return result
 		case <-done:
 			if terminalErr := terminalError(); terminalErr != nil {
-				return mediaSinkFailure(mediaProducerInput, terminalErr)
+				return mediaTerminalFailure(terminalErr)
 			}
 			if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ended"}); err != nil {
 				return mediaRelayResult{kind: mediaSendError, err: err}

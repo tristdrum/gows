@@ -52,6 +52,17 @@ func TestSignalProbeRetainsEndAfterLifecycleCleanup(t *testing.T) {
 	}
 }
 
+func TestSignalProbeRetainsFiniteMediaSendFailure(t *testing.T) {
+	var samples []SignalDiagnostic
+	p := &nativeSignalProbe{now: time.Now, emit: func(s SignalDiagnostic) { samples = append(samples, s) }}
+	p.admit(&fakeCall{id: "owned"}, "outbound")
+	p.end("owned", "media_send_failed")
+	p.end("owned", "media_send_failed:PRIVATE_SENTINEL")
+	if len(samples) != 2 || samples[0].EndCategory != "media_send_failed" || samples[1].EndCategory != "other" {
+		t.Fatal("fixed sender stage was erased or a freeform error was admitted")
+	}
+}
+
 func TestSignalProbeObservesSetupKindsInReceivedOrder(t *testing.T) {
 	var kinds []string
 	p := &nativeSignalProbe{now: time.Now, emit: func(s SignalDiagnostic) { kinds = append(kinds, s.Kind) }}
