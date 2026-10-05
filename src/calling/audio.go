@@ -7,17 +7,21 @@ import (
 	"io"
 	"math"
 	"sync"
+	"time"
 )
 
 const frameBytes = 960 * 2 // mono PCM16LE at 16 kHz, 60 ms
+const outputBackpressureTimeout = 120 * time.Millisecond
+
 var ErrInvalidPCM = errors.New("invalid PCM frame")
 var ErrMediaBackpressure = errors.New("media backlog exceeded 120 ms")
 
 type pcmQueue struct {
-	mu     sync.Mutex
-	frames chan []byte
-	done   chan struct{}
-	closed bool
+	mu        sync.Mutex
+	frames    chan []byte
+	done      chan struct{}
+	closed    bool
+	closeOnce sync.Once
 }
 
 func newPCMQueue() *pcmQueue {
@@ -33,11 +37,29 @@ func (q *pcmQueue) Push(data []byte) error {
 	if q.closed {
 		return io.EOF
 	}
+	frame := append([]byte(nil), data...)
 	select {
-	case q.frames <- append([]byte(nil), data...):
-		return nil
+	case <-q.done:
+		return io.EOF
+	case q.frames <- frame:
 	default:
-		return ErrMediaBackpressure
+		// A momentarily full queue is not a measured stall. Let the engine's
+		// existing frame clock free a slot within the declared handoff budget.
+		timer := time.NewTimer(outputBackpressureTimeout)
+		defer timer.Stop()
+		select {
+		case <-q.done:
+			return io.EOF
+		case q.frames <- frame:
+		case <-timer.C:
+			return ErrMediaBackpressure
+		}
+	}
+	select {
+	case <-q.done:
+		return io.EOF
+	default:
+		return nil
 	}
 }
 
@@ -82,12 +104,12 @@ func (q *pcmQueue) Clear() {
 }
 
 func (q *pcmQueue) Close() error {
+	// Cancel a waiting writer before taking its lock, so hangup never waits
+	// for the output backpressure budget to expire.
+	q.closeOnce.Do(func() { close(q.done) })
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if !q.closed {
-		q.closed = true
-		close(q.done)
-	}
+	q.closed = true
 	for {
 		select {
 		case <-q.frames:
