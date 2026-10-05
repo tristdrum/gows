@@ -73,11 +73,12 @@ func (q *pcmQueue) ReadFrame() ([]float32, error) {
 	case <-q.done:
 		return nil, io.EOF
 	case data := <-q.frames:
-		q.mu.Lock()
-		closed := q.closed
-		q.mu.Unlock()
-		if closed {
+		// Close publishes cancellation before taking the writer lock. The
+		// clocked consumer must never wait behind a full-queue writer.
+		select {
+		case <-q.done:
 			return nil, io.EOF
+		default:
 		}
 		frame := make([]float32, 960)
 		for i := range frame {
