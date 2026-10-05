@@ -125,8 +125,10 @@ func relayCallMediaResult(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.Med
 				return
 			}
 			sequence = packet.GetSequence()
+			producer := mediaProducerNone
 			switch packet.GetKind() {
 			case "pcm":
+				producer = mediaProducerOutput
 				recvErr = write(packet.GetPcm())
 			case "clear":
 				if len(packet.GetPcm()) != 0 {
@@ -138,14 +140,13 @@ func relayCallMediaResult(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.Med
 				recvErr = calling.ErrInvalidPCM
 			}
 			if recvErr != nil {
-				kind := mediaOwnedDone
+				result := mediaRelayResult{kind: mediaOwnedDone, err: recvErr}
 				// The owned output closes before Done is notified. Preserve its
 				// EOF so late PCM cannot turn a normal end into Unavailable.
 				if !errors.Is(recvErr, io.EOF) {
-					kind = mediaSinkError
-					recvErr = callError(recvErr)
+					result = mediaSinkFailure(producer, recvErr)
 				}
-				errorsCh <- mediaRelayResult{kind: kind, err: recvErr}
+				errorsCh <- result
 				return
 			}
 		}
@@ -159,14 +160,14 @@ func relayCallMediaResult(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.Med
 		case result := <-errorsCh:
 			if errors.Is(result.err, io.EOF) {
 				if terminalErr := terminalError(); terminalErr != nil {
-					return mediaRelayResult{kind: mediaSinkError, err: callError(terminalErr)}
+					return mediaSinkFailure(mediaProducerInput, terminalErr)
 				}
 				result.err = nil
 			}
 			return result
 		case <-done:
 			if terminalErr := terminalError(); terminalErr != nil {
-				return mediaRelayResult{kind: mediaSinkError, err: callError(terminalErr)}
+				return mediaSinkFailure(mediaProducerInput, terminalErr)
 			}
 			if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ended"}); err != nil {
 				return mediaRelayResult{kind: mediaSendError, err: err}

@@ -106,7 +106,18 @@ func TestOwnedMediaObservesActualExitBeforeCleanupOnShippingStdout(t *testing.T)
 			if (name == "receive_error" || strings.HasSuffix(name, "send_error")) && result != privateErr {
 				t.Fatal("transport error identity changed")
 			}
-			wantLine := "[NativeVoice INFO] native_media_terminal binding_hash=" + calling.NativeBindingHash(first.Session, first.CallId) + " return_kind=" + wantKind + "\n"
+			wantLine := "[NativeVoice INFO] native_media_terminal binding_hash=" + calling.NativeBindingHash(first.Session, first.CallId) + " return_kind=" + wantKind
+			switch name {
+			case "owned_sink_failure":
+				wantLine += " failure_producer=input failure_category=backlog"
+			case "late_eof_sink_failure":
+				wantLine += " failure_producer=input failure_category=invalid"
+			case "write_failure":
+				wantLine += " failure_producer=output failure_category=backlog"
+			case "invalid_command":
+				wantLine += " failure_producer=none failure_category=invalid"
+			}
+			wantLine += "\n"
 			observation, cleanup := strings.Index(output, wantLine), strings.Index(output, "cleanup-local-hangup")
 			if observation < 0 || cleanup <= observation || strings.Count(output, "native_media_terminal") != 1 {
 				t.Fatalf("missing, repeated or post-cleanup native observation: %q", output)

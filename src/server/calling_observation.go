@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+
 	"github.com/devlikeapro/gows/calling"
 	pb "github.com/devlikeapro/gows/proto"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -19,8 +21,46 @@ const (
 )
 
 type mediaRelayResult struct {
-	kind mediaReturnKind
-	err  error
+	kind     mediaReturnKind
+	err      error
+	producer mediaFailureProducer
+	category mediaFailureCategory
+}
+
+type mediaFailureProducer string
+type mediaFailureCategory string
+
+const (
+	mediaProducerNone    mediaFailureProducer = "none"
+	mediaProducerInput   mediaFailureProducer = "input"
+	mediaProducerOutput  mediaFailureProducer = "output"
+	mediaCategoryNone    mediaFailureCategory = "none"
+	mediaCategoryBacklog mediaFailureCategory = "backlog"
+	mediaCategoryInvalid mediaFailureCategory = "invalid"
+)
+
+func mediaSinkFailure(producer mediaFailureProducer, err error) mediaRelayResult {
+	category := mediaCategoryNone
+	if errors.Is(err, calling.ErrMediaBackpressure) {
+		category = mediaCategoryBacklog
+	} else if errors.Is(err, calling.ErrInvalidPCM) {
+		category = mediaCategoryInvalid
+	}
+	return mediaRelayResult{kind: mediaSinkError, err: callError(err), producer: producer, category: category}
+}
+
+func (r mediaRelayResult) sinkObservation() (mediaFailureProducer, mediaFailureCategory) {
+	producer, category := mediaProducerNone, mediaCategoryNone
+	if r.kind != mediaSinkError {
+		return producer, category
+	}
+	if r.producer == mediaProducerInput || r.producer == mediaProducerOutput {
+		producer = r.producer
+	}
+	if r.category == mediaCategoryBacklog || r.category == mediaCategoryInvalid {
+		category = r.category
+	}
+	return producer, category
 }
 
 type callMediaEndpoint struct {
@@ -38,7 +78,14 @@ func serveOwnedCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.Medi
 	// This observation precedes Close, which can itself initiate native hangup.
 	// It names the selected media return branch, not the first network initiator.
 	defer func() {
-		waLog.Stdout("NativeVoice", "INFO", false).Infof("native_media_terminal binding_hash=%s return_kind=%s", calling.NativeBindingHash(first.GetSession(), first.GetCallId()), result.kind)
+		format := "native_media_terminal binding_hash=%s return_kind=%s"
+		fields := []any{calling.NativeBindingHash(first.GetSession(), first.GetCallId()), result.kind}
+		if result.kind == mediaSinkError {
+			producer, category := result.sinkObservation()
+			format += " failure_producer=%s failure_category=%s"
+			fields = append(fields, producer, category)
+		}
+		waLog.Stdout("NativeVoice", "INFO", false).Infof(format, fields...)
 	}()
 	if err := stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ready"}); err != nil {
 		return err
