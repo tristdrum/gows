@@ -110,11 +110,11 @@ type Manager struct {
 
 // New installs the calling adapter before the existing client connects.
 // The caller must gate construction to explicitly enabled sessions.
-func New(client *whatsmeow.Client, emit func(Event), diagnostics ...func(SignalDiagnostic)) *Manager {
+func New(client *whatsmeow.Client, emit func(Event), session string, diagnostics ...func(SignalDiagnostic)) *Manager {
 	voice := meowcaller.NewClient(client)
 	m := newManager(nativeDialer{voice}, emit)
 	if len(diagnostics) > 0 && diagnostics[0] != nil {
-		m.probe = &nativeSignalProbe{now: time.Now, emit: diagnostics[0]}
+		m.probe = &nativeSignalProbe{session: session, now: time.Now, emit: diagnostics[0]}
 		voice.OnSignalObservation(m.probe.observe)
 	}
 	voice.OnIncomingCall(func(c *meowcaller.Call) {

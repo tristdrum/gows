@@ -7,9 +7,10 @@ import (
 	"github.com/purpshell/meowcaller"
 )
 
-// SignalDiagnostic contains only fixed categories and elapsed time. Call identity
-// is used privately to filter observations and never enters this value.
+// SignalDiagnostic contains only an opaque binding, fixed categories and elapsed
+// time. Raw session and call identity never enter this value.
 type SignalDiagnostic struct {
+	BindingHash   string `json:"binding_hash"`
 	RelayPresent  bool   `json:"relay_present"`
 	MediaReady    bool   `json:"media_ready"`
 	Kind          string `json:"kind"`
@@ -30,6 +31,7 @@ const maxEarlySignals = 16
 
 type nativeSignalProbe struct {
 	mu        sync.Mutex
+	session   string
 	call      handle
 	direction string
 	started   time.Time
@@ -130,13 +132,13 @@ func (p *nativeSignalProbe) sample(observation probeObservation) {
 		p.mu.Unlock()
 		return
 	}
-	direction, started, emit := p.direction, p.started, p.emit
+	direction, started, emit, session := p.direction, p.started, p.emit, p.session
 	p.mu.Unlock()
 	state := phase(observation.Phase)
 	if direction != "inbound" && direction != "outbound" {
 		direction = "unavailable"
 	}
 	if emit != nil {
-		emit(SignalDiagnostic{Kind: observation.Kind, Direction: direction, Phase: state, ElapsedMs: observation.at.Sub(started).Milliseconds(), TransportType: observation.TransportType, EndCategory: observation.endCategory, RelayPresent: observation.RelayPresent, MediaReady: state == "active"})
+		emit(SignalDiagnostic{BindingHash: NativeBindingHash(session, observation.CallID), Kind: observation.Kind, Direction: direction, Phase: state, ElapsedMs: observation.at.Sub(started).Milliseconds(), TransportType: observation.TransportType, EndCategory: observation.endCategory, RelayPresent: observation.RelayPresent, MediaReady: state == "active"})
 	}
 }

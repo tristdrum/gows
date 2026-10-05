@@ -93,26 +93,35 @@ func (s *Server) Media(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaP
 	if err != nil {
 		return callError(err)
 	}
-	defer media.Close()
-	if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ready"}); err != nil {
-		return err
-	}
-	return relayCallMedia(stream, first, media.Input, media.Done, media.Write, media.Clear, media.TerminalError)
+	return serveOwnedCallMedia(stream, first, callMediaEndpoint{
+		input: media.Input, done: media.Done, write: media.Write, clear: media.Clear, terminalError: media.TerminalError, close: media.Close,
+	})
 }
 
 func relayCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPacket], first *pb.MediaPacket,
 	input <-chan []byte, done <-chan struct{}, write func([]byte) error, clear func(), terminalError func() error) error {
-	errorsCh := make(chan error, 1)
+	return relayCallMediaResult(stream, first, input, done, write, clear, terminalError).err
+}
+
+func relayCallMediaResult(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPacket], first *pb.MediaPacket,
+	input <-chan []byte, done <-chan struct{}, write func([]byte) error, clear func(), terminalError func() error) mediaRelayResult {
+	errorsCh := make(chan mediaRelayResult, 1)
 	go func() {
 		var sequence uint64
 		for {
 			packet, recvErr := stream.Recv()
 			if recvErr != nil {
-				errorsCh <- recvErr
+				kind := mediaReceiveError
+				if errors.Is(recvErr, io.EOF) {
+					kind = mediaClientEOF
+				} else if stream.Context().Err() != nil && errors.Is(recvErr, stream.Context().Err()) {
+					kind = mediaContextCancelled
+				}
+				errorsCh <- mediaRelayResult{kind: kind, err: recvErr}
 				return
 			}
 			if packet.GetSession() != first.GetSession() || packet.GetCallId() != first.GetCallId() || packet.GetSequence() != sequence+1 {
-				errorsCh <- status.Error(codes.InvalidArgument, "media identity or sequence changed")
+				errorsCh <- mediaRelayResult{kind: mediaReceiveError, err: status.Error(codes.InvalidArgument, "media identity or sequence changed")}
 				return
 			}
 			sequence = packet.GetSequence()
@@ -129,12 +138,14 @@ func relayCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPack
 				recvErr = calling.ErrInvalidPCM
 			}
 			if recvErr != nil {
+				kind := mediaOwnedDone
 				// The owned output closes before Done is notified. Preserve its
 				// EOF so late PCM cannot turn a normal end into Unavailable.
 				if !errors.Is(recvErr, io.EOF) {
+					kind = mediaSinkError
 					recvErr = callError(recvErr)
 				}
-				errorsCh <- recvErr
+				errorsCh <- mediaRelayResult{kind: kind, err: recvErr}
 				return
 			}
 		}
@@ -144,24 +155,27 @@ func relayCallMedia(stream grpc.BidiStreamingServer[pb.MediaPacket, pb.MediaPack
 	for {
 		select {
 		case <-stream.Context().Done():
-			return stream.Context().Err()
-		case err = <-errorsCh:
-			if errors.Is(err, io.EOF) {
+			return mediaRelayResult{kind: mediaContextCancelled, err: stream.Context().Err()}
+		case result := <-errorsCh:
+			if errors.Is(result.err, io.EOF) {
 				if terminalErr := terminalError(); terminalErr != nil {
-					return callError(terminalErr)
+					return mediaRelayResult{kind: mediaSinkError, err: callError(terminalErr)}
 				}
-				return nil
+				result.err = nil
 			}
-			return err
+			return result
 		case <-done:
 			if terminalErr := terminalError(); terminalErr != nil {
-				return callError(terminalErr)
+				return mediaRelayResult{kind: mediaSinkError, err: callError(terminalErr)}
 			}
-			return stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ended"})
+			if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "ended"}); err != nil {
+				return mediaRelayResult{kind: mediaSendError, err: err}
+			}
+			return mediaRelayResult{kind: mediaOwnedDone}
 		case data := <-input:
 			sequence++
 			if err = stream.Send(&pb.MediaPacket{CallId: first.GetCallId(), Kind: "pcm", Pcm: data, Sequence: sequence}); err != nil {
-				return err
+				return mediaRelayResult{kind: mediaSendError, err: err}
 			}
 		}
 	}
