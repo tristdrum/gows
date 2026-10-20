@@ -15,6 +15,8 @@ func NewMessageStorage() *MessageStorage {
 	return &MessageStorage{}
 }
 
+func (s MessageStorage) UpdateMessageStatus(types.MessageID, storage.Status) error { return nil }
+
 func (s MessageStorage) UpsertOneMessage(msg *storage.StoredMessage) error {
 	return nil
 }

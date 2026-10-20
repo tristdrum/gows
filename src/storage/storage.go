@@ -21,6 +21,8 @@ type Storage struct {
 
 type MessageStorage interface {
 	UpsertOneMessage(msg *StoredMessage) error
+	// UpdateMessageStatus advances only an existing message; it never recreates deleted content.
+	UpdateMessageStatus(id types.MessageID, status Status) error
 	GetLastMessagesInChats(filter ChatFilter, sortBy Sort, pagination Pagination, merge bool) ([]*StoredMessage, error)
 	GetAllMessages(filters MessageFilter, sortBy Sort, pagination Pagination, merge bool) ([]*StoredMessage, error)
 	GetChatMessages(jid types.JID, filters MessageFilter, pagination Pagination, merge bool) ([]*StoredMessage, error)

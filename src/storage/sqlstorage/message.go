@@ -29,10 +29,6 @@ func (gc *GContainer) NewMessageStorage() *SqlMessageStore {
 	}
 }
 
-func (s SqlMessageStore) UpsertOneMessage(msg *storage.StoredMessage) (err error) {
-	return s.UpsertOne(msg)
-}
-
 func (s SqlMessageStore) GetAllMessages(filters storage.MessageFilter, sort storage.Sort, pagination storage.Pagination, merge bool) ([]*storage.StoredMessage, error) {
 	conditions := make([]sq.Sqlizer, 0)
 	if filters.Jid != nil {
