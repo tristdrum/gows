@@ -16,6 +16,10 @@ type chatViewMessageStorage struct {
 	counts       map[string]uint64
 }
 
+func (s *chatViewMessageStorage) UpdateMessageStatus(types.MessageID, storage.Status) error {
+	return nil
+}
+
 func (s *chatViewMessageStorage) UpsertOneMessage(*storage.StoredMessage) error { return nil }
 func (s *chatViewMessageStorage) GetLastMessagesInChats(storage.ChatFilter, storage.Sort, storage.Pagination, bool) ([]*storage.StoredMessage, error) {
 	return s.lastMessages, nil

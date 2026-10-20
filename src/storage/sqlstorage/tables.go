@@ -23,6 +23,9 @@ var MessageTable = Table{
 		"id",
 	},
 	UpdateOnConflict: []string{
+		"jid",
+		"from_me",
+		"is_real",
 		"timestamp",
 		"data",
 	},

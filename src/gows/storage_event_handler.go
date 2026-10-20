@@ -64,59 +64,6 @@ func (st *StorageEventHandler) GetMessageForRetry(requester, to types.JID, id ty
 	return msg.Message.RawMessage
 }
 
-func isRealMessage(event *events.Message) bool {
-	if event.Message == nil {
-		return false
-	}
-	msg := event.Message
-	switch {
-	case msg.Conversation != nil:
-		return true
-	case msg.ExtendedTextMessage != nil:
-		return true
-	case msg.ImageMessage != nil:
-		return true
-	case msg.ContactMessage != nil:
-		return true
-	case msg.LocationMessage != nil:
-		return true
-	case msg.VideoMessage != nil:
-		return true
-	case msg.PtvMessage != nil:
-		return true
-	case msg.AudioMessage != nil:
-		return true
-	case msg.DocumentMessage != nil:
-		return true
-	case msg.DocumentWithCaptionMessage != nil:
-		return true
-	case msg.StickerMessage != nil:
-		return true
-	case msg.ContactsArrayMessage != nil:
-		return true
-	case msg.TemplateMessage != nil:
-		return true
-	case msg.ListMessage != nil:
-		return true
-	case msg.RichResponseMessage != nil:
-		return true
-	case msg.PollCreationMessage != nil:
-		return true
-	case msg.PollCreationMessageV2 != nil:
-		return true
-	case msg.PollCreationMessageV3 != nil:
-		return true
-	case msg.PollCreationMessageV4 != nil:
-		return true
-	case msg.PollCreationMessageV5 != nil:
-		return true
-	case msg.ButtonsResponseMessage != nil:
-		return true
-	default:
-		return false
-	}
-}
-
 func (st *StorageEventHandler) handleEvent(event interface{}) {
 	// Handle all panic and log error + stack
 	defer func() {
@@ -199,7 +146,7 @@ func (st *StorageEventHandler) handleSaveMessage(event *events.Message, status *
 	messageToStore := &storage.StoredMessage{
 		Message: event,
 		Status:  status,
-		IsReal:  isRealMessage(event),
+		IsReal:  storage.IsRealMessage(event),
 	}
 
 	err := st.storage.Messages.UpsertOneMessage(messageToStore)
@@ -275,20 +222,15 @@ func (st *StorageEventHandler) handleReceipt(event *events.Receipt) {
 	}
 	for _, id := range event.MessageIDs {
 		st.log.Debugf("Updating status for message %v(%v) to %v (receipt type: '%v')", event.Chat, id, status, event.Type.GoString())
-		msg, err := st.storage.Messages.GetMessageWithRetries(id)
+		err := retry.Do(func() error {
+			return st.storage.Messages.UpdateMessageStatus(id, status)
+		}, retry.Attempts(6), retry.RetryIf(func(err error) bool {
+			return errors.Is(err, storage.ErrNotFound)
+		}))
 		if errors.Is(err, storage.ErrNotFound) {
 			st.log.Debugf("Message %v(%v) not found", event.Chat, id)
 			continue
 		}
-		if err != nil {
-			st.log.Debugf("Error getting message - storage handle receipt %v(%v): %v", event.Chat, id, err)
-			continue
-		}
-		if msg.Status != nil && *msg.Status >= status {
-			continue
-		}
-		msg.Status = &status
-		err = st.storage.Messages.UpsertOneMessage(msg)
 		if err != nil {
 			st.log.Errorf("Error updating status for message %v(%v): %v", event.Chat, id, err)
 			continue

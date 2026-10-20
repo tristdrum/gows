@@ -13,6 +13,10 @@ type recordingMessageStorage struct {
 	deleteBefore time.Time
 }
 
+func (s *recordingMessageStorage) UpdateMessageStatus(types.MessageID, storage.Status) error {
+	return nil
+}
+
 func (s *recordingMessageStorage) UpsertOneMessage(*storage.StoredMessage) error {
 	return nil
 }
