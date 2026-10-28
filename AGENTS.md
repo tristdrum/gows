@@ -4,3 +4,4 @@
 
 - For compact chat index changes, preserve `CHAT_INDEX.md` contracts and run its SQLite/Postgres pagination, bounded-query, and cancellation regressions.
 - For explicit Status capture/reads, preserve `STATUS_HISTORY.md` lease, expiry and non-caching media boundaries; generic message routes must never expose Status content.
+- Restored local `gows.db` snapshots require the Status restore marker before session startup; ordinary restarts retain valid Status history, but restored snapshots must invalidate it to prevent revoke resurrection.

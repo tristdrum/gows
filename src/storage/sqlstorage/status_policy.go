@@ -31,24 +31,28 @@ func (s *SQLStatusHistoryStore) begin(ctx context.Context) (*sqlx.Tx, *statusPol
 	if err != nil {
 		return nil, nil, err
 	}
+	return lockStatusPolicy(ctx, tx)
+}
+
+func lockStatusPolicy(ctx context.Context, tx *sqlx.Tx) (*sqlx.Tx, *statusPolicyRecord, error) {
 	empty := `{"policy":{},"capture":{"state":"disabled","started_at_ms":null,"generation":"","authorized_until_ms":0,"acknowledged_at_ms":0,"gaps":[]}}`
-	if _, err = tx.ExecContext(ctx, "INSERT INTO gows_status_capture(id,data) VALUES (1,$1) ON CONFLICT(id) DO NOTHING", empty); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO gows_status_capture(id,data) VALUES (1,$1) ON CONFLICT(id) DO NOTHING", empty); err != nil {
 		tx.Rollback()
 		return nil, nil, err
 	}
 	// A write before reading establishes a single cross-handle serialization boundary
 	// for both SQLite and PostgreSQL, including policy, reads, writes and pruning.
-	if _, err = tx.ExecContext(ctx, "UPDATE gows_status_capture SET data=data WHERE id=1"); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE gows_status_capture SET data=data WHERE id=1"); err != nil {
 		tx.Rollback()
 		return nil, nil, err
 	}
 	var raw string
-	if err = tx.GetContext(ctx, &raw, "SELECT data FROM gows_status_capture WHERE id=1"); err != nil {
+	if err := tx.GetContext(ctx, &raw, "SELECT data FROM gows_status_capture WHERE id=1"); err != nil {
 		tx.Rollback()
 		return nil, nil, err
 	}
 	var rec statusPolicyRecord
-	if err = json.Unmarshal([]byte(raw), &rec); err != nil {
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
 		tx.Rollback()
 		return nil, nil, storage.ErrStatusData
 	}
@@ -103,7 +107,7 @@ func closeStatusGap(rec *statusPolicyRecord, now int64) {
 		rec.Capture.Gaps[n-1].UntilMS = &now
 	}
 }
-func (s *SQLStatusHistoryStore) Configure(ctx context.Context, policy storage.StatusPolicy) (storage.StatusCapture, error) {
+func (s *SQLStatusHistoryStore) Configure(ctx context.Context, policy storage.StatusPolicy) (capture storage.StatusCapture, result error) {
 	now := s.now().UnixMilli()
 	if policy.AuthorizationSubject == "" || len(policy.AuthorizationSubject) > 100 || policy.AccountID == "" || len(policy.AccountID) > 100 || policy.ShardID == "" || len(policy.ShardID) > 100 || !statusPhone.MatchString(policy.ExpectedPhone) || policy.ObservedAtMS <= 0 || policy.ObservedAtMS > now+5000 {
 		return storage.StatusCapture{}, storage.ErrStatusInvalid
@@ -114,11 +118,11 @@ func (s *SQLStatusHistoryStore) Configure(ctx context.Context, policy storage.St
 	if !policy.Enabled {
 		policy.AuthorizedUntilMS = 0
 	}
-	tx, rec, err := s.begin(ctx)
+	tx, rec, finish, err := s.beginPolicy(ctx, true)
 	if err != nil {
 		return storage.StatusCapture{}, err
 	}
-	defer tx.Rollback()
+	defer finishStatusPolicy(finish, &result)
 	now = s.now().UnixMilli()
 	if policy.Enabled && policy.AuthorizedUntilMS <= now {
 		return storage.StatusCapture{}, storage.ErrStatusInvalid
@@ -150,6 +154,12 @@ func (s *SQLStatusHistoryStore) Configure(ctx context.Context, policy storage.St
 		rec.Capture.Generation = uuid.NewString()
 		start := now
 		rec.Capture.StartedAtMS = &start
+		// WhatsApp timestamps may have only whole-second resolution. Do not
+		// admit ambiguous pre-authorization content from the partial first second.
+		if boundary := ((now + 999) / 1000) * 1000; boundary > now {
+			statusGap(rec, now, "timestamp_resolution")
+			closeStatusGap(rec, boundary)
+		}
 	}
 	if !policy.Enabled && rec.Policy.Enabled {
 		statusGap(rec, now, "capture_disabled")

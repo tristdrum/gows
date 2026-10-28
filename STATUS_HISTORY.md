@@ -23,7 +23,11 @@ repeated control is idempotent; stale or conflicting controls fail closed.
 Reads repeat the binding and exact reads also repeat capture generation.
 
 A single policy-row transaction serializes controls, content admission,
-revoke tombstones, reads and purge for both SQLite and Postgres. A disabled
+revoke tombstones, reads and purge for both SQLite and Postgres. SQLite policy
+acknowledgements and revoke transactions use `synchronous=FULL` on their own
+reserved connection, restoring its prior mode before returning it to the pool.
+This keeps security removals durable without changing ordinary capture, reads
+or chat storage. A disabled
 policy purges Status content immediately. Expired authorization rejects new
 capture and all content reads immediately; maintenance removes its content
 within a minute under normal database availability. Re-enabling after an
@@ -38,7 +42,9 @@ viewed, send receipts, set presence, invoke AI or download media eagerly.
 The admission timestamp fences work delayed across disable/re-enable.
 Original provider timestamps determine expiry, at most 24 hours and earlier
 when provider context supplies a shorter lifetime. Only live events dated no
-earlier than the current capture start are admitted. This does not backfill
+earlier than the current capture start are admitted. Because provider timestamps
+can have whole-second resolution, the first partial second after activation is
+excluded and recorded as a `timestamp_resolution` coverage gap. This does not backfill
 previously ignored content. Missing sender provenance is recorded as a known
 coverage gap; malformed stored representations count as unavailable source
 items rather than producing a false complete page.
@@ -49,6 +55,22 @@ uncertain coverage from the last acknowledged control to restart. A restored
 expired authorization purges content before reauthorization can expose it.
 Normal backup retention is unchanged. Revoke tombstones expire after 24 hours
 and suppress delayed copies without retaining revoked content.
+
+Filesystem snapshot restore is distinct from an ordinary restart: the restore
+writer atomically places `.min-status-history-restored` beside the staged
+`gows.db` before installing the session directory. On startup GOWS derives this
+marker from its configured local SQLite address, invalidates authorization,
+purges only Status content/tombstones under the policy transaction and creates a
+new generation with a `snapshot_restored` gap. SQLite reserves one connection,
+sets `synchronous=FULL` before this transaction and restores its prior mode after
+the durable commit; ordinary pooled work retains its existing setting. Only
+after that succeeds is the marker removed.
+Marker or purge failures prevent that session from starting; an unconsumed
+marker retries safely. An older snapshot cannot revive a later-revoked Status
+even when its original lease is still valid and route binding is unchanged.
+Ordinary chat/auth data and backup retention are preserved. The filesystem
+marker does not apply to direct Postgres stores; their restore orchestrator must
+call the same store invalidation before exposing restored content.
 
 Media download decrypts through WhatsMeow directly into an immediately unlinked
 temporary file. Writes, encrypted overhead and final plaintext size are bounded

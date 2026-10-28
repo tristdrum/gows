@@ -99,4 +99,5 @@ type StatusHistoryStorage interface {
 	Exact(context.Context, StatusExact) (*StatusHistoryResult, error)
 	Prune(context.Context) error
 	Restart(context.Context) error
+	InvalidateRestore(context.Context) error
 }

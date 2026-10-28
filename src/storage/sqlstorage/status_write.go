@@ -41,12 +41,14 @@ func validStatusMessage(msg *storage.StoredMessage) bool {
 	return sender.User != "" && (sender.Server == types.DefaultUserServer || sender.Server == types.HiddenUserServer)
 }
 
-func (s *SQLStatusHistoryStore) Capture(ctx context.Context, msg *storage.StoredMessage, ownPhone string, receivedAtMS int64) error {
-	tx, rec, err := s.begin(ctx)
+func (s *SQLStatusHistoryStore) Capture(ctx context.Context, msg *storage.StoredMessage, ownPhone string, receivedAtMS int64) (result error) {
+	protocolRevoke := msg != nil && msg.Message != nil && msg.Message.Message.GetProtocolMessage() != nil &&
+		msg.Message.Message.GetProtocolMessage().GetType() == waE2E.ProtocolMessage_REVOKE
+	tx, rec, finish, err := s.beginPolicy(ctx, protocolRevoke)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer finishStatusPolicy(finish, &result)
 	now := s.now().UnixMilli()
 	if !rec.Policy.Enabled || rec.Policy.AuthorizedUntilMS <= now {
 		return tx.Commit()
@@ -72,7 +74,7 @@ func (s *SQLStatusHistoryStore) Capture(ctx context.Context, msg *storage.Stored
 	if source.TimestampMS > now+5000 || source.ExpiresAtMS <= now {
 		return tx.Commit()
 	}
-	if rec.Capture.StartedAtMS == nil || source.TimestampMS < (*rec.Capture.StartedAtMS/1000)*1000 {
+	if rec.Capture.StartedAtMS == nil || source.TimestampMS < *rec.Capture.StartedAtMS {
 		return tx.Commit()
 	}
 	if source.FromMe && msg.Info.Sender.User != rec.Policy.ExpectedPhone {
@@ -140,12 +142,12 @@ func (s *SQLStatusHistoryStore) Capture(ctx context.Context, msg *storage.Stored
 		return storage.ErrStatusData
 	}
 	// Never allow a Status identity collision to overwrite an ordinary chat row.
-	result, err := tx.ExecContext(ctx, `INSERT INTO gows_messages(id,jid,timestamp,from_me,is_real,data)
+	inserted, err := tx.ExecContext(ctx, `INSERT INTO gows_messages(id,jid,timestamp,from_me,is_real,data)
   VALUES($1,'status@broadcast',$2,$3,true,$4) ON CONFLICT(id) DO NOTHING`, source.ID, time.UnixMilli(source.TimestampMS).UTC(), source.FromMe, string(data))
 	if err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
+	count, err := inserted.RowsAffected()
 	if err != nil {
 		return err
 	}

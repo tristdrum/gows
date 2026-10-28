@@ -227,6 +227,14 @@ func BuildSession(
 		storage:    gows.Storage,
 		ignoreJids: ignoreJids,
 	}
+	restoreCtx, restoreCancel := context.WithTimeout(ctx, 10*time.Second)
+	err = invalidateRestoredStatusHistory(restoreCtx, gows.Storage.StatusHistory, dialect, address)
+	restoreCancel()
+	if err != nil {
+		cancel()
+		_ = container.Close()
+		return nil, err
+	}
 	gows.statusHistoryStop, err = startStatusHistory(ctx, gows.Storage.StatusHistory)
 	if err != nil {
 		cancel()
