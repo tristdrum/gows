@@ -51,9 +51,9 @@ func loadIndexAliases(ctx context.Context, tx *sqlx.Tx) (indexAliases, error) {
 
 func latestIndexIdentitiesSQL(driver string) string {
 	if driver == "postgres" {
-		return "SELECT DISTINCT ON (jid) id, jid, timestamp FROM gows_messages WHERE is_real = true ORDER BY jid, timestamp DESC, id ASC"
+		return "SELECT DISTINCT ON (jid) id, jid, timestamp FROM gows_messages WHERE is_real = true AND jid <> 'status@broadcast' ORDER BY jid, timestamp DESC, id ASC"
 	}
-	return "SELECT id, jid, timestamp FROM (SELECT id, jid, timestamp, ROW_NUMBER() OVER (PARTITION BY jid ORDER BY timestamp DESC, id ASC) AS rn FROM gows_messages WHERE is_real = true) AS latest WHERE rn = 1"
+	return "SELECT id, jid, timestamp FROM (SELECT id, jid, timestamp, ROW_NUMBER() OVER (PARTITION BY jid ORDER BY timestamp DESC, id ASC) AS rn FROM gows_messages WHERE is_real = true AND jid <> 'status@broadcast') AS latest WHERE rn = 1"
 }
 
 func latestIndexIdentities(ctx context.Context, tx *sqlx.Tx, aliases indexAliases) ([]indexMessageIdentity, error) {

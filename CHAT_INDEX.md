@@ -24,6 +24,10 @@ and canonical JID ascending. Latest-message ties prefer PN representation and
 then message ID. Source offsets refer to that live canonical sequence, not to
 the number of returned unread matches. Separate requests are not a snapshot.
 
+Status rows are excluded from identity selection before canonical merging,
+ordering and source pagination. They are available only through the separate
+[Status history capability](STATUS_HISTORY.md).
+
 Unread reads consume at most 1,000 source chats and stop on the requested match
 count or proven source exhaustion. `scanned_count` and continuation count only
 the consumed prefix; unknown unread state beyond it does not invalidate a page.

@@ -10,6 +10,7 @@ import (
 
 func BuildStorage(container *sqlstorage.GContainer, gows *GoWS, cfg StorageConfig) *storage.Storage {
 	st := &storage.Storage{}
+	st.StatusHistory = container.NewStatusHistoryStorage()
 	st.ChatEphemeralSetting = container.NewChatEphemeralSettingStorage()
 	st.ChatReadState = container.NewChatReadStateStorage()
 	st.Contacts = meowstorage.NewContactStorage(gows.Store)

@@ -18,6 +18,9 @@ func (s SqlMessageStore) UpsertOneMessage(msg *storage.StoredMessage) error {
 	if msg == nil || msg.Message == nil || msg.Info.ID == "" {
 		return errors.New("cannot store a message without its provider identity")
 	}
+	if msg.Info.Chat == types.StatusBroadcastJID {
+		return storage.ErrStatusUnauthorized
+	}
 	incoming := *msg
 	incoming.IsReal = storage.IsRealMessage(incoming.Message)
 	data, err := messageMapper.Marshal(&incoming)
@@ -76,6 +79,9 @@ func (s SqlMessageStore) updateStoredMessage(id types.MessageID, change messageC
 		}
 		if current.Info.ID != id {
 			return fmt.Errorf("stored message identity does not match row %s", id)
+		}
+		if current.Info.Chat == types.StatusBroadcastJID {
+			return storage.ErrStatusUnauthorized
 		}
 		// Historical IsReal fields and indexed columns can disagree. Derive
 		// both from the accepted structured content, not either stale value.

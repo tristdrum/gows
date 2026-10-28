@@ -73,6 +73,9 @@ func (st *StorageEventHandler) handleEvent(event interface{}) {
 		}
 	}()
 
+	if st.handleStatusHistoryEvent(event, time.Now().UnixMilli()) {
+		return
+	}
 	switch event.(type) {
 	case *events.Message:
 		msg := event.(*events.Message)

@@ -3,3 +3,4 @@
 - For message persistence or classification changes, follow `HISTORY_STORAGE.md` and exercise its actual SQLite/PostgreSQL regressions; receipt writes must use the status-only storage operation.
 
 - For compact chat index changes, preserve `CHAT_INDEX.md` contracts and run its SQLite/Postgres pagination, bounded-query, and cancellation regressions.
+- For explicit Status capture/reads, preserve `STATUS_HISTORY.md` lease, expiry and non-caching media boundaries; generic message routes must never expose Status content.

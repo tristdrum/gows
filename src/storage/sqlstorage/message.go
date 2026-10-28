@@ -35,7 +35,7 @@ func (s SqlMessageStore) GetAllMessages(filters storage.MessageFilter, sort stor
 }
 
 func (s SqlMessageStore) GetAllMessagesContext(ctx context.Context, filters storage.MessageFilter, sort storage.Sort, pagination storage.Pagination, merge bool) ([]*storage.StoredMessage, error) {
-	conditions := make([]sq.Sqlizer, 0)
+	conditions := []sq.Sqlizer{sq.NotEq{"jid": "status@broadcast"}}
 	if filters.Jid != nil {
 		target := *filters.Jid
 		jidColumn := fmt.Sprintf("%s.jid", s.table.Name)
@@ -93,13 +93,17 @@ func (s SqlMessageStore) GetChatMessages(jid types.JID, filters storage.MessageF
 }
 
 func (s SqlMessageStore) GetMessage(id types.MessageID) (msg *storage.StoredMessage, err error) {
-	return s.GetById(id)
+	msg, err = s.GetBy([]sq.Sqlizer{sq.Eq{"id": id}, sq.NotEq{"jid": "status@broadcast"}})
+	if err == nil && msg != nil && msg.Info.Chat == types.StatusBroadcastJID {
+		return nil, storage.ErrNotFound
+	}
+	return msg, err
 }
 
 func (s SqlMessageStore) GetMessageWithRetries(id types.MessageID) (msg *storage.StoredMessage, err error) {
 	err = retry.Do(
 		func() error {
-			msg, err = s.GetById(id)
+			msg, err = s.GetMessage(id)
 			if err != nil {
 				return err
 			}
@@ -178,6 +182,7 @@ func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.St
 	query, args, err := sq.Select("id", "jid", "timestamp").
 		From(s.table.Name).
 		Where(sq.Eq{"from_me": false, "is_real": true}).
+		Where(sq.NotEq{"jid": "status@broadcast"}).
 		Where(conditions).
 		ToSql()
 	if err != nil {
@@ -232,7 +237,7 @@ func (s SqlMessageStore) CountInboundMessagesAfter(states map[string]*storage.St
 func (s SqlMessageStore) getLastMessagesPostgresSubquery(primaryExpr string, priorityExpr string) *sq.SelectBuilder {
 	query := sq.Select("DISTINCT ON (" + primaryExpr + ") id").
 		From(s.table.Name).
-		Where("is_real = true").
+		Where("is_real = true AND jid <> 'status@broadcast'").
 		OrderByClause(primaryExpr).
 		OrderByClause("timestamp DESC")
 	if priorityExpr != "" {
@@ -256,7 +261,7 @@ func (s SqlMessageStore) getLastMessagesSQLiteSubquery(primaryExpr string, prior
 				"ROW_NUMBER() OVER (PARTITION BY ("+primaryExpr+") ORDER BY "+ordering+") as rn",
 			).
 				From(s.table.Name).
-				Where("is_real = true"),
+				Where("is_real = true AND jid <> 'status@broadcast'"),
 			"sub").
 		Where("rn = 1")
 	return &query
@@ -391,7 +396,7 @@ func (s SqlMessageStore) fetchDistinctLatestByJID(jidCondition string, jidFilter
 	case "postgres":
 		sub = sq.Select("DISTINCT ON (jid) id").
 			From(s.table.Name).
-			Where("is_real = true").
+			Where("is_real = true AND jid <> 'status@broadcast'").
 			Where(jidCondition).
 			OrderByClause("jid").
 			OrderByClause("timestamp DESC")
@@ -400,7 +405,7 @@ func (s SqlMessageStore) fetchDistinctLatestByJID(jidCondition string, jidFilter
 			FromSelect(
 				sq.Select("id", "jid", "ROW_NUMBER() OVER (PARTITION BY jid ORDER BY timestamp DESC) as rn").
 					From(s.table.Name).
-					Where("is_real = true").
+					Where("is_real = true AND jid <> 'status@broadcast'").
 					Where(jidCondition),
 				"sub").
 			Where("rn = 1")

@@ -14,6 +14,10 @@ during an update is not reinserted. This does not introduce persistent revoke
 tombstones or change the handling of a new delivery after an already completed
 delete.
 
+The separate [current Status buffer](STATUS_HISTORY.md) adds bounded revoke
+tombstones only for explicitly authorized Status capture. Generic message
+storage continues to exclude Status; ordinary chat semantics above are unchanged.
+
 Run focused regressions from `src/`:
 
 ```sh

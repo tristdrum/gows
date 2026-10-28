@@ -187,6 +187,64 @@ service MessageService {
   rpc GetChats(GetChatsRequest) returns (JsonList);
   rpc GetChatIndex(GetChatIndexRequest) returns (Json);
 
+  // Explicit Status storage is independent of normalized webhook ignore policy.
+  rpc ConfigureStatusHistory(StatusHistoryConfigRequest) returns (Json);
+  rpc GetStatusHistory(StatusHistoryListRequest) returns (Json);
+  rpc GetStatusHistoryMessage(StatusHistoryExactRequest) returns (Json);
+  rpc DownloadStatusHistoryMedia(StatusHistoryMediaRequest) returns (stream StatusHistoryMediaChunk);
+
+}
+
+message StatusHistoryConfigRequest {
+  Session session = 1;
+  string account_id = 2;
+  string expected_phone = 3;
+  string shard_id = 4;
+  uint64 epoch = 5;
+  int64 observed_at_ms = 6;
+  bool enabled = 7;
+  int64 authorized_until_ms = 8;
+  string authorization_subject = 9;
+}
+
+message StatusHistoryListRequest {
+  Session session = 1;
+  string account_id = 2;
+  string expected_phone = 3;
+  string shard_id = 4;
+  uint64 epoch = 5;
+  int64 since_ms = 6;
+  int64 until_ms = 7;
+  uint32 limit = 8;
+  int64 before_timestamp_ms = 9;
+  string before_id = 10;
+  string generation = 11;
+  string authorization_subject = 12;
+}
+
+message StatusHistoryExactRequest {
+  Session session = 1;
+  string account_id = 2;
+  string expected_phone = 3;
+  string shard_id = 4;
+  uint64 epoch = 5;
+  string id = 6;
+  string sender = 7;
+  bool from_me = 8;
+  string authorization_subject = 9;
+  string generation = 10;
+}
+
+message StatusHistoryMediaRequest {
+  StatusHistoryExactRequest message = 1;
+  uint64 max_bytes = 2;
+}
+
+message StatusHistoryMediaChunk {
+  bytes data = 1;
+  string mimetype = 2;
+  uint64 total_bytes = 3;
+  int64 expires_at_ms = 4;
 }
 
 

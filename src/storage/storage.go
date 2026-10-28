@@ -8,6 +8,7 @@ import (
 )
 
 type Storage struct {
+	StatusHistory        StatusHistoryStorage
 	Messages             MessageStorage
 	Contacts             ContactStorage
 	Chats                ChatStorage

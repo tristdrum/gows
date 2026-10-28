@@ -34,6 +34,7 @@ type GoWS struct {
 	eventHandlerID         uint32
 	chatReadStateBootstrap sync.Once
 	Voice                  *calling.Manager
+	statusHistoryStop      func()
 }
 
 func (gows *GoWS) reissueEvent(event interface{}) {
@@ -83,7 +84,11 @@ func (gows *GoWS) reissueEvent(event interface{}) {
 }
 
 func (gows *GoWS) handleEvent(event interface{}) {
+	receivedAtMS := time.Now().UnixMilli()
 	go gows.reissueEvent(event)
+	if gows.storageEventHandler.handleStatusHistoryEvent(event, receivedAtMS) {
+		return
+	}
 	go gows.storageEventHandler.handleEvent(event)
 }
 
@@ -135,6 +140,9 @@ func (gows *GoWS) Stop() {
 	}
 
 	gows.Disconnect()
+	if gows.statusHistoryStop != nil {
+		gows.statusHistoryStop()
+	}
 	if gows.container != nil {
 		err := gows.container.Close()
 		if err != nil {
@@ -197,6 +205,7 @@ func BuildSession(
 		0,
 		sync.Once{},
 		nil,
+		nil,
 	}
 	// Unrelated sessions retain their existing raw stanza handlers.
 	for _, name := range strings.Split(os.Getenv("GOWS_CALLING_SESSIONS"), ",") {
@@ -217,6 +226,12 @@ func BuildSession(
 		log:        gows.Log.Sub("Storage"),
 		storage:    gows.Storage,
 		ignoreJids: ignoreJids,
+	}
+	gows.statusHistoryStop, err = startStatusHistory(ctx, gows.Storage.StatusHistory)
+	if err != nil {
+		cancel()
+		_ = container.Close()
+		return nil, err
 	}
 	gows.GetMessageForRetry = gows.storageEventHandler.GetMessageForRetry
 	gows.BackgroundEventCtx = gows.Context
