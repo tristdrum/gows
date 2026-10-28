@@ -1,6 +1,7 @@
 package sqlstorage
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -30,19 +31,23 @@ func (gc *GContainer) NewMessageStorage() *SqlMessageStore {
 }
 
 func (s SqlMessageStore) GetAllMessages(filters storage.MessageFilter, sort storage.Sort, pagination storage.Pagination, merge bool) ([]*storage.StoredMessage, error) {
+	return s.GetAllMessagesContext(context.Background(), filters, sort, pagination, merge)
+}
+
+func (s SqlMessageStore) GetAllMessagesContext(ctx context.Context, filters storage.MessageFilter, sort storage.Sort, pagination storage.Pagination, merge bool) ([]*storage.StoredMessage, error) {
 	conditions := make([]sq.Sqlizer, 0)
 	if filters.Jid != nil {
 		target := *filters.Jid
 		jidColumn := fmt.Sprintf("%s.jid", s.table.Name)
 		if merge {
 			var err error
-			target, err = s.canonicalizeJID(*filters.Jid)
+			target, err = canonicalizeJIDContext(ctx, s.db, *filters.Jid)
 			if err != nil {
 				return nil, err
 			}
 			// Resolve all LID JIDs that map to this phone number in one pre-lookup,
 			// so the WHERE clause uses exact equality and the (jid, timestamp) index.
-			lids, err := s.reverseLookupLIDs(target.User)
+			lids, err := reverseLookupLIDsContext(ctx, s.db, target.User)
 			if err != nil {
 				return nil, err
 			}
@@ -75,7 +80,7 @@ func (s SqlMessageStore) GetAllMessages(filters storage.MessageFilter, sort stor
 
 	conditions = append(conditions, sq.Eq{"is_real": true})
 	sorts := []storage.Sort{sort}
-	return s.FilterBy(conditions, sorts, pagination)
+	return s.FilterByContext(ctx, conditions, sorts, pagination)
 }
 
 func (s SqlMessageStore) GetChatMessages(jid types.JID, filters storage.MessageFilter, pagination storage.Pagination, merge bool) ([]*storage.StoredMessage, error) {

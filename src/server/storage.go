@@ -48,7 +48,12 @@ func (s *Server) GetMessages(ctx context.Context, req *__.GetMessagesRequest) (*
 	if req.GetMerge() != nil {
 		merge = req.GetMerge().Value
 	}
-	messages, err := cli.Storage.Messages.GetAllMessages(*filters, sort, pagination, merge)
+	var messages []*storage.StoredMessage
+	if contextual, ok := cli.Storage.Messages.(storage.ContextMessageStorage); ok {
+		messages, err = contextual.GetAllMessagesContext(ctx, *filters, sort, pagination, merge)
+	} else {
+		messages, err = cli.Storage.Messages.GetAllMessages(*filters, sort, pagination, merge)
+	}
 	if err != nil {
 		return nil, err
 	}

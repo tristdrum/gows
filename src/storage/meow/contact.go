@@ -100,3 +100,29 @@ func applyPagination(contacts []*storage.StoredContact, pagination storage.Pagin
 	}
 	return contacts
 }
+
+// GetContactNames uses the device-scoped local store in one query. It does not
+// refresh contacts from WhatsApp and never mixes another device's address book.
+func (s MeowContactStorage) GetContactNames(ctx context.Context, jids []string) (map[string]string, error) {
+	names := make(map[string]string, len(jids))
+	if len(jids) == 0 {
+		return names, nil
+	}
+	contacts, err := s.store.Contacts.GetAllContacts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, raw := range jids {
+		jid, err := types.ParseJID(raw)
+		if err != nil {
+			return nil, err
+		}
+		contact := contacts[jid]
+		name := contact.FullName
+		if name == "" {
+			name = contact.PushName
+		}
+		names[raw] = name
+	}
+	return names, ctx.Err()
+}

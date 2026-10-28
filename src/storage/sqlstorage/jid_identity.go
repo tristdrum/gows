@@ -1,6 +1,7 @@
 package sqlstorage
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 
@@ -10,6 +11,10 @@ import (
 )
 
 func canonicalizeJID(db *sqlx.DB, jid types.JID) (types.JID, error) {
+	return canonicalizeJIDContext(context.Background(), db, jid)
+}
+
+func canonicalizeJIDContext(ctx context.Context, db *sqlx.DB, jid types.JID) (types.JID, error) {
 	if jid.Server != types.HiddenUserServer {
 		return jid, nil
 	}
@@ -22,7 +27,7 @@ func canonicalizeJID(db *sqlx.DB, jid types.JID) (types.JID, error) {
 		return types.JID{}, err
 	}
 	var pn string
-	err = db.Get(&pn, query, args...)
+	err = db.GetContext(ctx, &pn, query, args...)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return jid, nil
@@ -35,12 +40,16 @@ func canonicalizeJID(db *sqlx.DB, jid types.JID) (types.JID, error) {
 }
 
 func reverseLookupLIDs(db *sqlx.DB, pn string) ([]string, error) {
+	return reverseLookupLIDsContext(context.Background(), db, pn)
+}
+
+func reverseLookupLIDsContext(ctx context.Context, db *sqlx.DB, pn string) ([]string, error) {
 	query, args, err := sq.Select("lid").From("whatsmeow_lid_map").Where(sq.Eq{"pn": pn}).ToSql()
 	if err != nil {
 		return nil, err
 	}
 	var lids []string
-	if err := db.Select(&lids, query, args...); err != nil {
+	if err := db.SelectContext(ctx, &lids, query, args...); err != nil {
 		return nil, err
 	}
 	result := make([]string, 0, len(lids))

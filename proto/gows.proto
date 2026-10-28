@@ -185,6 +185,7 @@ service MessageService {
 
 
   rpc GetChats(GetChatsRequest) returns (JsonList);
+  rpc GetChatIndex(GetChatIndexRequest) returns (Json);
 
 }
 
@@ -731,6 +732,12 @@ message GetContactsRequest {
 //
 message ChatFilter {
   repeated string jids = 1;
+}
+
+message GetChatIndexRequest {
+  Session session = 1;
+  Pagination pagination = 2;
+  bool unread_only = 3;
 }
 
 message GetChatsRequest {

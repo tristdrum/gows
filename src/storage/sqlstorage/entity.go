@@ -1,10 +1,12 @@
 package sqlstorage
 
 import (
+	"context"
+	"strings"
+
 	sq "github.com/Masterminds/squirrel"
 	"github.com/devlikeapro/gows/storage"
 	"github.com/jmoiron/sqlx"
-	"strings"
 )
 
 func init() {
@@ -89,14 +91,22 @@ func (kv *EntityRepository[Entity]) FilterBy(
 	sort []storage.Sort,
 	pagination storage.Pagination,
 ) (entities []*Entity, err error) {
+	return kv.FilterByContext(context.Background(), conditions, sort, pagination)
+}
+
+func (kv *EntityRepository[Entity]) FilterByContext(ctx context.Context, conditions []sq.Sqlizer, sort []storage.Sort, pagination storage.Pagination) ([]*Entity, error) {
 	sql := sq.Select(kv.table.DataField).From(kv.table.Name)
 	for _, cond := range conditions {
 		sql = sql.Where(cond)
 	}
-	return kv.Retrieve(sql, pagination, sort)
+	return kv.RetrieveContext(ctx, sql, pagination, sort)
 }
 
 func (kv *EntityRepository[Entity]) Retrieve(sql sq.SelectBuilder, pagination storage.Pagination, sort []storage.Sort) (entities []*Entity, err error) {
+	return kv.RetrieveContext(context.Background(), sql, pagination, sort)
+}
+
+func (kv *EntityRepository[Entity]) RetrieveContext(ctx context.Context, sql sq.SelectBuilder, pagination storage.Pagination, sort []storage.Sort) (entities []*Entity, err error) {
 	if pagination.Limit > 0 {
 		sql = sql.Limit(pagination.Limit)
 	}
@@ -111,11 +121,14 @@ func (kv *EntityRepository[Entity]) Retrieve(sql sq.SelectBuilder, pagination st
 		return nil, err
 	}
 	var data []string
-	err = kv.db.Select(&data, query, args...)
+	err = kv.db.SelectContext(ctx, &data, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range data {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		var entity Entity
 		err = kv.mapper.Unmarshal([]byte(d), &entity)
 		if err != nil {
