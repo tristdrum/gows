@@ -58,3 +58,11 @@ named `gows_*_test`. The harness rejects remote hosts and other database names.
 Index tests clear the disposable source tables. The optional Postgres test
 records the query plan timing and 20-sample p95 for 50 chats over 101,000 rows,
 and proves cancellation of blocked SQL followed by a successful read.
+
+`TestChatIndexDirectContactPostgresPerformance` covers the full `ChatView`,
+including the real device-scoped contact-name store, over 101,000 messages,
+1,000 direct chats and address books of 1,000 and 10,000 contacts. It checks
+1/25/50-result pages, constant SQL round trips, cross-device name isolation,
+and 20-sample p95. Contact lookup currently materializes that device's full
+address-book metadata in one query; the fixture measures this existing cost
+rather than claiming contact materialization is bounded by page size.
