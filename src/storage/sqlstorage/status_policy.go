@@ -81,6 +81,9 @@ func statusCapture(rec *statusPolicyRecord, now int64) storage.StatusCapture {
 		if len(gaps) == 0 || gaps[len(gaps)-1].UntilMS != nil {
 			gaps = append(gaps, storage.StatusGap{SinceMS: rec.Policy.AuthorizedUntilMS, Reason: "authorization_expired"})
 		}
+		if len(gaps) > 32 {
+			gaps = gaps[len(gaps)-32:]
+		}
 		c.Gaps = gaps
 	}
 	if c.Gaps == nil {
