@@ -53,7 +53,19 @@ func latestIndexIdentitiesSQL(driver string) string {
 	if driver == "postgres" {
 		return "SELECT DISTINCT ON (jid) id, jid, timestamp FROM gows_messages WHERE is_real = true AND jid <> 'status@broadcast' ORDER BY jid, timestamp DESC, id ASC"
 	}
-	return "SELECT id, jid, timestamp FROM (SELECT id, jid, timestamp, ROW_NUMBER() OVER (PARTITION BY jid ORDER BY timestamp DESC, id ASC) AS rn FROM gows_messages WHERE is_real = true AND jid <> 'status@broadcast') AS latest WHERE rn = 1"
+	// Scan only the covering (jid, timestamp) index before looking up the latest
+	// rows. A window over all message IDs forces SQLite into history-table reads
+	// and ID tie sorting, even though payloads are loaded only after pagination.
+	return `SELECT MIN(m.id) AS id, m.jid, m.timestamp
+FROM gows_messages AS m
+JOIN (
+    SELECT jid, MAX(timestamp) AS timestamp
+    FROM gows_messages
+    WHERE is_real = true AND jid <> 'status@broadcast'
+    GROUP BY jid
+) AS latest ON latest.jid = m.jid AND latest.timestamp = m.timestamp
+WHERE m.is_real = true AND m.jid <> 'status@broadcast'
+GROUP BY m.jid, m.timestamp`
 }
 
 func latestIndexIdentities(ctx context.Context, tx *sqlx.Tx, aliases indexAliases) ([]indexMessageIdentity, error) {

@@ -45,6 +45,15 @@ queries, including existing message-list reads. Client timeout does not by
 itself prove provider work stopped; cancellation tests cover pool and query
 waits.
 
+SQLite first groups the covering `(jid, timestamp)` partial index to find each
+raw identity's latest real timestamp, then looks up only tied latest rows and
+chooses the smallest real message ID. This avoids fetching and sorting IDs
+across the entire message table. Both stages exclude non-real messages and
+Status; the original timestamp column remains the typed scan source. The
+Postgres `DISTINCT ON` path and Go PN/LID canonicalization are unchanged.
+The SQLite plan regression requires full history scans to remain covering;
+contract tests preserve timestamp/ID ties, exclusions and PN preference.
+
 Run `make build-proto` before Go tests. Generated Go bindings remain ignored
 build artifacts. Focused validation:
 
