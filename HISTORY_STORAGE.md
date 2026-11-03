@@ -8,6 +8,34 @@ message replay, and status is monotonic across delivery, history and receipts.
 Receipts use `UpdateMessageStatus`; they must not upsert a previously read
 message snapshot. Existing revoke/delete handlers remain authoritative.
 
+## Edited message projection
+
+Stored history merges a supported `MESSAGE_EDIT` protocol into the existing
+original message instead of treating its notification as new user content.
+Both raw API events and normalized linked-device/history events must retain a
+verifiable protocol target and positive provider `TimestampMS`. The store checks
+the authenticated event's chat, sender and ownership against the original row;
+device qualifiers and explicit sender alternate identities do not change the
+original identity. The nested key uses the editor's perspective, so an incoming
+direct edit names this account as its recipient rather than the editor's chat.
+
+Only text or image/video/document captions change. The merge preserves original
+send time, ID, sender, media artifacts, receipt status and unknown retained JSON
+fields. `RawMessage` and `SourceWebMsg` content stay consistent. Internal `MinEdit`
+metadata records version `1`, `edited_at_ms` and `original_timestamp_ms` separately
+from `Info.Timestamp`; zero original time means legacy edited content cannot
+prove it. Newer provider versions win. Older versions and equal-version duplicates
+or conflicts retain the already accepted content, so receipt/history replay cannot
+undo an edit. It does not create an edit-content audit trail.
+
+Raw protocol frames remain under their own non-real IDs for provider resend and
+acknowledgement handling, and stay excluded from visible history. Applying an
+edit is update-only: a missing original or concurrent delete is not recreated.
+This forward correction does not backfill historical protocol rows, queue edits
+that arrived before their original, or add generic revoke tombstones. Unsupported
+or unverifiable edit envelopes fail without replacing original content; ordinary
+non-edit storage behavior is unchanged.
+
 An update retries a bounded compare-and-set when another writer changes the
 payload. Malformed existing payloads fail without replacement. A delete observed
 during an update is not reinserted. This does not introduce persistent revoke

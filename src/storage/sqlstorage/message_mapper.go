@@ -55,6 +55,7 @@ type messageTemp struct {
 	RawMessage            json.RawMessage               `json:"RawMessage"`
 	Status                storage.Status                `json:"Status"`
 	IsReal                bool                          `json:"IsReal"`
+	MinEdit               *storage.MessageEditMetadata  `json:"MinEdit,omitempty"`
 }
 
 func (f *MessageMapper) Marshal(msg *storage.StoredMessage) ([]byte, error) {
@@ -100,6 +101,7 @@ func (f *MessageMapper) Marshal(msg *storage.StoredMessage) ([]byte, error) {
 		temp.Status = *msg.Status
 	}
 	temp.IsReal = msg.IsReal
+	temp.MinEdit = msg.MinEdit
 
 	return json.Marshal(temp)
 }
@@ -141,6 +143,7 @@ func (f *MessageMapper) Unmarshal(data []byte, msg *storage.StoredMessage) error
 	}
 
 	msg.IsReal = temp.IsReal
+	msg.MinEdit = temp.MinEdit
 
 	// Unmarshal Message if present
 	if !isNullJson(temp.Message) {

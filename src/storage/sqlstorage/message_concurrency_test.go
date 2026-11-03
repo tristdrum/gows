@@ -5,19 +5,22 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/devlikeapro/gows/storage"
 	"github.com/stretchr/testify/require"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/types"
 	"google.golang.org/protobuf/proto"
 )
 
 func TestMessageIntegrityReceiptsDoNotRestoreOldContent(t *testing.T) {
 	forMessageDatabases(t, func(t *testing.T, store *SqlMessageStore) {
 		original := integrityMessage(&waE2E.Message{Conversation: proto.String("Original")}, storage.StatusServerAck)
+		original.Info.IsGroup = true
+		original.Info.Sender = types.NewJID("27760000010", types.DefaultUserServer)
 		require.NoError(t, store.UpsertOneMessage(original))
-		edited := duplicateMessage(original, &waE2E.Message{Conversation: proto.String("Edited")}, storage.StatusDeliveryAck)
-		edited.IsEdit = true
+		edited := editEvent(original, &waE2E.Message{Conversation: proto.String("Edited")}, original.Info.Timestamp.Add(time.Minute).UnixMilli(), true)
 		require.NoError(t, store.UpsertOneMessage(edited))
 		require.NoError(t, store.UpdateMessageStatus(original.Info.ID, storage.StatusPlayed))
 		require.NoError(t, store.UpsertOneMessage(original))
@@ -26,7 +29,7 @@ func TestMessageIntegrityReceiptsDoNotRestoreOldContent(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "Edited", actual.Message.Message.GetConversation())
 		require.Equal(t, storage.StatusPlayed, *actual.Status)
-		assertStoredProjection(t, store, edited, true)
+		assertStoredProjection(t, store, original, true)
 
 		require.NoError(t, store.DeleteMessage(original.Info.ID))
 		require.ErrorIs(t, store.UpdateMessageStatus(original.Info.ID, storage.StatusPlayed), storage.ErrNotFound)
@@ -64,6 +67,8 @@ func TestMessageIntegrityCASRetriesCurrentContentAndStopsOnDelete(t *testing.T) 
 	forMessageDatabases(t, func(t *testing.T, store *SqlMessageStore) {
 		for _, deleteDuringUpdate := range []bool{false, true} {
 			message := integrityMessage(&waE2E.Message{Conversation: proto.String("Original")}, storage.StatusServerAck)
+			message.Info.Sender = types.NewJID("27760000010", types.DefaultUserServer)
+			message.Info.IsGroup = true
 			require.NoError(t, store.UpsertOneMessage(message))
 			calls := 0
 			err := store.updateStoredMessage(message.Info.ID, func(current *storage.StoredMessage, raw []byte) (*storage.StoredMessage, []byte, error) {
@@ -72,8 +77,8 @@ func TestMessageIntegrityCASRetriesCurrentContentAndStopsOnDelete(t *testing.T) 
 					if deleteDuringUpdate {
 						require.NoError(t, store.DeleteMessage(message.Info.ID))
 					} else {
-						edit := duplicateMessage(message, &waE2E.Message{Conversation: proto.String("Concurrent edit")}, storage.StatusPlayed)
-						edit.IsEdit = true
+						edit := editEvent(message, &waE2E.Message{Conversation: proto.String("Concurrent edit")}, message.Info.Timestamp.Add(time.Minute).UnixMilli(), true)
+						edit.Status = protoStatus(storage.StatusPlayed)
 						require.NoError(t, store.UpsertOneMessage(edit))
 					}
 				}

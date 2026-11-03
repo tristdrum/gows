@@ -23,8 +23,17 @@ const (
 // StoredMessage contains a message and some additional data.
 type StoredMessage struct {
 	*events.Message
-	IsReal bool
-	Status *Status
+	IsReal  bool
+	Status  *Status
+	MinEdit *MessageEditMetadata `json:"MinEdit,omitempty"`
+}
+
+// MessageEditMetadata records edit ordering separately from the original send
+// time. Zero OriginalTimestampMS means legacy data cannot prove that time.
+type MessageEditMetadata struct {
+	Version             int   `json:"version"`
+	EditedAtMS          int64 `json:"edited_at_ms"`
+	OriginalTimestampMS int64 `json:"original_timestamp_ms"`
 }
 
 type StoredContact struct {

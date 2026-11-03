@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/devlikeapro/gows/storage"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -21,6 +22,31 @@ func (s SqlMessageStore) UpsertOneMessage(msg *storage.StoredMessage) error {
 	if msg.Info.Chat == types.StatusBroadcastJID {
 		return storage.ErrStatusUnauthorized
 	}
+	edit, err := decodeMessageEdit(msg)
+	if err != nil {
+		return err
+	}
+	if edit != nil {
+		// Keep the protocol frame under its own ID for provider resend and
+		// acknowledgement paths. It is non-real and excluded from chat history.
+		if msg.Info.ID != edit.GetKey().GetID() {
+			protocol := *msg
+			event := *msg.Message
+			protocol.Message = &event
+			protocol.Message.Message = &waE2E.Message{ProtocolMessage: edit}
+			if protocol.RawMessage == nil {
+				protocol.RawMessage = protocol.Message.Message
+			}
+			if err := s.upsertMessage(&protocol); err != nil {
+				return err
+			}
+		}
+		return s.applyMessageEdit(msg, edit)
+	}
+	return s.upsertMessage(msg)
+}
+
+func (s SqlMessageStore) upsertMessage(msg *storage.StoredMessage) error {
 	incoming := *msg
 	incoming.IsReal = storage.IsRealMessage(incoming.Message)
 	data, err := messageMapper.Marshal(&incoming)
