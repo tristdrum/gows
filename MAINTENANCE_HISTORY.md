@@ -8,8 +8,11 @@ acknowledgements follow checked auxiliary writes, ordinary storage and a durable
 stored marker. Never equate `OfflineSyncCompleted` with finished persistence.
 
 The additive `gows_maintenance_*` tables preserve the existing migration version.
-Legacy writes must keep working and invalidate coverage; triggers use standard SQL,
-not connection-local UDFs. Metadata retains no deleted content. Invalidate coverage
+Legacy writes must keep working and invalidate coverage. Exact message ID/chat/time
+registrations, including original edit/revoke targets, authorize writes; unrelated
+pending work never does. Triggers use standard SQL, not connection-local UDFs.
+Status, newsletters and broadcasts are excluded from seed, activity, reads and raw
+payloads regardless of grants. Validated PN/LID aliases remain intact. Metadata retains no deleted content. Invalidate coverage
 on dedicated `.min-maintenance-history-restored` markers before exposing the store.
 
 Run `go test -race -p 2 ./gows ./storage/sqlstorage ./server` from `src` after generating
@@ -17,3 +20,9 @@ protobuf bindings. Tests use temporary databases and failure-injection fixtures;
 never connect a customer session for this suite. Live-image/delivery proof belongs
 to Min's authorized release, whose canonical contract is
 `min.cool/docs/GOWS_MAINTENANCE_HISTORY.md`.
+
+PostgreSQL boundary tests use a caller-created local `gows_*_test` database through
+`GOWS_TEST_POSTGRES_DSN`; they clear only its public schema. The optional
+`GOWS_SEED_TIMING=1 go test ./storage/sqlstorage -run ^TestMaintenanceSeedTiming$ -count=1 -v`
+rehearsal creates/removes 28 synthetic SQLite databases with four parallel starters.
+Its local warm-cache timing is not Linux image or live readiness proof.

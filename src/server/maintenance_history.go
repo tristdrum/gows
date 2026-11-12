@@ -21,12 +21,12 @@ func (s *Server) GetMaintenanceHistory(ctx context.Context, req *__.MaintenanceH
 	chatID := req.GetChatId()
 	if chatID != "" {
 		jid, parseErr := types.ParseJID(chatID)
-		if parseErr != nil {
+		if parseErr != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.LegacyUserServer && jid.Server != types.HiddenUserServer && jid.Server != types.GroupServer) {
 			return nil, status.Error(codes.InvalidArgument, "maintenance_chat_invalid")
 		}
 		if jid.Server == types.HiddenUserServer {
 			pn, mappingErr := cli.Store.LIDs.GetPNForLID(ctx, jid)
-			if mappingErr != nil || pn.IsEmpty() {
+			if mappingErr != nil || pn.IsEmpty() || pn.Server != types.DefaultUserServer {
 				return nil, status.Error(codes.FailedPrecondition, "maintenance_identity_unknown")
 			}
 			chatID = pn.ToNonAD().String()

@@ -276,13 +276,7 @@ func (st *StorageEventHandler) saveHistoryForOneChatContext(ctx context.Context,
 		if msg.SourceWebMsg != nil && msg.SourceWebMsg.Status != nil {
 			status = storage.Status(*msg.SourceWebMsg.Status)
 		}
-		if err = st.handleSaveMessage(msg, &status); err != nil {
-			return err
-		}
-		if err = st.observeMaintenanceMessage(msg); err != nil {
-			return err
-		}
-		if err = st.handleMessageEvent(msg); err != nil {
+		if err = st.persistHistoryMessage(ctx, msg, &status); err != nil {
 			return err
 		}
 	}

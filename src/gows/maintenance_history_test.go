@@ -11,6 +11,7 @@ import (
 
 	"github.com/devlikeapro/gows/storage"
 	"github.com/stretchr/testify/require"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/types"
@@ -173,4 +174,30 @@ func TestMaintenanceDedicatedRestoreMarkerSurvivesOldStatusConsumer(t *testing.T
 	page, err := g.Maintenance.Page(context.Background(), storage.MaintenanceQuery{From: now, To: now, Limit: 5})
 	require.NoError(t, err)
 	require.Contains(t, page.Coverage.Errors, "snapshot_restored")
+}
+
+func TestMaintenanceHistoryWritesRegisterEditsAndRevokesExactly(t *testing.T) {
+	g := maintenanceTestClient(t)
+	ctx := context.Background()
+	g.handleMaintenanceEvent(&events.Connected{})
+	g.handleMaintenanceEvent(&events.OfflineSyncCompleted{})
+	now := time.Now().Unix()
+	chat := types.NewJID("fixture", types.GroupServer)
+	original := &events.Message{Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: chat, Sender: types.NewJID("123456789", types.DefaultUserServer), IsFromMe: true, IsGroup: true}, ID: "original", Timestamp: time.Unix(now, 0)}, Message: &waE2E.Message{Conversation: proto.String("before")}}
+	status := storage.StatusServerAck
+	require.NoError(t, g.storageEventHandler.persistHistoryMessage(ctx, original, &status))
+	edit := &events.Message{Info: original.Info, Message: &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_MESSAGE_EDIT.Enum(), Key: &waCommon.MessageKey{ID: proto.String("original"), RemoteJID: proto.String(chat.String()), FromMe: proto.Bool(true)}, TimestampMS: proto.Int64(time.Now().UnixMilli()), EditedMessage: &waE2E.Message{Conversation: proto.String("after")}}}}
+	edit.Info.ID = "edit-frame"
+	edit.RawMessage = edit.Message
+	edit.Message = &waE2E.Message{Conversation: proto.String("after")}
+	edit.IsEdit = true
+	require.NoError(t, g.storageEventHandler.persistHistoryMessage(ctx, edit, &status))
+	revoke := &events.Message{Info: original.Info, Message: &waE2E.Message{ProtocolMessage: &waE2E.ProtocolMessage{Type: waE2E.ProtocolMessage_REVOKE.Enum(), Key: &waCommon.MessageKey{ID: proto.String("original")}}}}
+	revoke.Info.ID = "revoke-frame"
+	require.NoError(t, g.storageEventHandler.persistHistoryMessage(ctx, revoke, &status))
+	page, err := g.Maintenance.Page(ctx, storage.MaintenanceQuery{From: now, To: now, Limit: 10})
+	require.NoError(t, err)
+	require.True(t, page.Coverage.Complete, page.Coverage.Errors)
+	require.Len(t, page.Items, 1)
+	require.True(t, page.Items[0].Deleted)
 }

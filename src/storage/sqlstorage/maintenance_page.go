@@ -23,11 +23,21 @@ type maintenanceCursor struct {
 }
 
 func (h *SQLMaintenanceHistoryStore) Observe(ctx context.Context, msg *storage.StoredMessage, canonical string) error {
-	if msg == nil || !storage.IsRealMessage(msg.Message) {
+	if msg == nil || !storage.IsRealMessage(msg.Message) || !maintenanceChat(msg.Info.Chat.String()) || msg.Info.IsNewsletterStatus {
+		return nil
+	}
+	edit, err := decodeMessageEdit(msg)
+	if err != nil {
+		return err
+	}
+	if edit != nil {
 		return nil
 	}
 	if msg.Info.Timestamp.Unix() < time.Now().Add(-maintenanceRetention).Unix() {
 		return nil
+	}
+	if canonical != "" && !maintenanceChat(canonical) {
+		return errors.New("invalid maintenance canonical chat")
 	}
 	return h.change(ctx, func(tx *sqlx.Tx, s *maintenanceState) error {
 		jid := canonical
@@ -43,6 +53,9 @@ func (h *SQLMaintenanceHistoryStore) Observe(ctx context.Context, msg *storage.S
 func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.MaintenanceQuery) (*storage.MaintenancePage, error) {
 	if q.From <= 0 || q.To < q.From || q.To-q.From > 86400 || q.To > time.Now().Unix()+2 || q.Limit < 1 || q.Limit > 200 || len(q.Cursor) > 2048 || len(q.Token) > 128 || len(q.ChatID) > 100 {
 		return nil, errors.New("invalid bounded maintenance history window")
+	}
+	if q.ChatID != "" && !maintenanceChat(q.ChatID) {
+		return nil, errors.New("unsupported maintenance chat scope")
 	}
 	q.ChatID = strings.Replace(q.ChatID, "@c.us", "@s.whatsapp.net", 1)
 	h.mu.Lock()
@@ -72,7 +85,7 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	p.Window.From = q.From
 	p.Window.To = q.To
 	var windowRevision int64
-	if err = tx.GetContext(ctx, &windowRevision, `SELECT COALESCE(MAX(revision),0) FROM gows_maintenance_activity WHERE timestamp>=$1 AND timestamp<=$2 AND ($3='' OR jid=$3 OR identity_known=FALSE)`, q.From, q.To, q.ChatID); err != nil {
+	if err = tx.GetContext(ctx, &windowRevision, `SELECT COALESCE(MAX(revision),0) FROM gows_maintenance_activity WHERE `+maintenanceChatSQL("provider_jid")+` AND `+maintenanceChatSQL("jid")+` AND timestamp>=$1 AND timestamp<=$2 AND ($3='' OR jid=$3 OR identity_known=FALSE)`, q.From, q.To, q.ChatID); err != nil {
 		return nil, err
 	}
 	tokenData, _ := json.Marshal([]any{s.Epoch, windowRevision, s.Since, s.Fault, row.Untracked, q.From, q.To, q.ChatID})
@@ -128,7 +141,7 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 		}
 	}
 	var unknown int
-	if err = tx.GetContext(ctx, &unknown, `SELECT COUNT(*) FROM gows_maintenance_activity WHERE timestamp>=$1 AND timestamp<=$2 AND identity_known=FALSE`, q.From, q.To); err != nil {
+	if err = tx.GetContext(ctx, &unknown, `SELECT COUNT(*) FROM gows_maintenance_activity WHERE `+maintenanceChatSQL("provider_jid")+` AND `+maintenanceChatSQL("jid")+` AND timestamp>=$1 AND timestamp<=$2 AND identity_known=FALSE`, q.From, q.To); err != nil {
 		return nil, err
 	}
 	if unknown > 0 {
@@ -147,7 +160,9 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	}
 	rows, err := tx.QueryxContext(ctx, `SELECT a.id,a.jid,a.provider_jid,a.timestamp,a.from_me,m.data
   FROM gows_maintenance_activity a LEFT JOIN gows_messages m ON m.id=a.id AND m.is_real=TRUE AND a.deleted=FALSE
-  WHERE a.timestamp>=$1 AND a.timestamp<=$2 AND ($3='' OR a.jid=$3)
+  WHERE `+maintenanceChatSQL("a.provider_jid")+` AND `+maintenanceChatSQL("a.jid")+`
+  AND (m.id IS NULL OR (`+maintenanceChatSQL("m.jid")+` AND m.jid=a.provider_jid AND `+maintenanceContentSQL(h.db.DriverName(), "m.data")+`))
+  AND a.timestamp>=$1 AND a.timestamp<=$2 AND ($3='' OR a.jid=$3)
   AND ($4='' OR a.timestamp>$5 OR (a.timestamp=$5 AND a.jid>$6) OR (a.timestamp=$5 AND a.jid=$6 AND a.id>$4))
   ORDER BY a.timestamp,a.jid,a.id LIMIT $7`, q.From, q.To, q.ChatID, cursor.ID, cursor.Timestamp, cursor.JID, q.Limit+1)
 	if err != nil {
@@ -163,7 +178,14 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 		item.Kind = "ordinary"
 		item.Deleted = !data.Valid
 		if data.Valid {
-			if !json.Valid([]byte(data.String)) {
+			var boundary struct {
+				Info struct {
+					ID                 string
+					Chat               string
+					IsNewsletterStatus bool
+				}
+			}
+			if json.Unmarshal([]byte(data.String), &boundary) != nil || boundary.Info.ID != item.ID || boundary.Info.Chat != item.ProviderJID || !maintenanceChat(boundary.Info.Chat) || boundary.Info.IsNewsletterStatus {
 				rows.Close()
 				return nil, errors.New("invalid stored maintenance payload")
 			}
@@ -194,7 +216,7 @@ func (h *SQLMaintenanceHistoryStore) Seed(ctx context.Context) error {
 	}
 	_, err := h.db.ExecContext(ctx, `INSERT INTO gows_maintenance_activity(id,provider_jid,jid,timestamp,from_me,identity_known,revision)
  SELECT id,jid,jid,`+timestamp+`,from_me,CASE WHEN jid LIKE '%@lid' THEN FALSE ELSE TRUE END,(SELECT revision FROM gows_maintenance_state WHERE id=1) FROM gows_messages
- WHERE is_real=TRUE AND timestamp >= $1 ON CONFLICT(id) DO NOTHING`, time.Now().Add(-maintenanceRetention).UTC())
+ WHERE is_real=TRUE AND `+maintenanceChatSQL("jid")+` AND `+maintenanceContentSQL(h.db.DriverName(), "data")+` AND timestamp >= $1 ON CONFLICT(id) DO NOTHING`, time.Now().Add(-maintenanceRetention).UTC())
 	return err
 }
 
@@ -218,6 +240,9 @@ func (h *SQLMaintenanceHistoryStore) Revoke(ctx context.Context, id string) erro
 }
 
 func (h *SQLMaintenanceHistoryStore) MapIdentity(ctx context.Context, lid, pn string) error {
+	if !maintenanceChat(lid) || !strings.HasSuffix(lid, "@lid") || !maintenanceChat(pn) || !strings.HasSuffix(pn, "@s.whatsapp.net") {
+		return errors.New("invalid maintenance identity mapping")
+	}
 	return h.change(ctx, func(tx *sqlx.Tx, s *maintenanceState) error {
 		_, err := tx.ExecContext(ctx, `UPDATE gows_maintenance_activity SET jid=$1,identity_known=TRUE,revision=(SELECT revision FROM gows_maintenance_state WHERE id=1) WHERE provider_jid=$2`, pn, lid)
 		return err

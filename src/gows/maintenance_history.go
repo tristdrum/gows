@@ -160,7 +160,9 @@ func (g *GoWS) handleMaintenanceEvent(event any) bool {
 		case <-w.ctx.Done():
 			return true
 		}
-		if err := h.Begin(g.Context); err != nil {
+		writes, err := h.BeginMessage(g.Context, e)
+		if err != nil {
+			_ = h.Fail(g.Context, "storage_failed")
 			<-w.slots
 			return false
 		}
@@ -175,7 +177,7 @@ func (g *GoWS) handleMaintenanceEvent(event any) bool {
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
-				if h.Finish(ctx, result) != nil {
+				if h.FinishMessage(ctx, writes, result) != nil {
 					g.Log.Errorf("maintenance persistence ledger failed")
 				}
 			}()
@@ -354,4 +356,27 @@ func maintenanceNonordinary(msg *events.Message) bool {
 		return true
 	})
 	return known && !unknown
+}
+
+func (st *StorageEventHandler) persistHistoryMessage(ctx context.Context, msg *events.Message, status *storage.Status) (result error) {
+	if st.gows != nil && st.gows.Maintenance != nil && maintenanceOrdinaryJID(msg.Info.Chat) {
+		writes, err := st.gows.Maintenance.BeginMessage(ctx, msg)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			finishCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			// The durable history job owns retry/failure state for this batch.
+			// A retryable message write is not an irrecoverable ordinary-event gap.
+			result = errors.Join(result, st.gows.Maintenance.FinishMessage(finishCtx, writes, nil))
+		}()
+	}
+	if result = st.handleSaveMessage(msg, status); result != nil {
+		return result
+	}
+	if result = st.observeMaintenanceMessage(msg); result != nil {
+		return result
+	}
+	return st.handleMessageEvent(msg)
 }
