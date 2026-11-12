@@ -85,6 +85,9 @@ func (c *GContainer) NewMaintenanceHistoryStorage(ctx context.Context) (*SQLMain
 	}
 	needsSeed := count > 0
 	err = h.change(ctx, func(tx *sqlx.Tx, s *maintenanceState) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE gows_maintenance_history_jobs SET last_error='history_attempt_interrupted' WHERE acked=FALSE AND attempts>0 AND last_error=''`); err != nil {
+			return err
+		}
 		var untracked bool
 		if err := tx.GetContext(ctx, &untracked, `SELECT untracked FROM gows_maintenance_state WHERE id=1`); err != nil {
 			return err

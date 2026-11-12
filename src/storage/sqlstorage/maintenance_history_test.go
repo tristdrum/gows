@@ -278,3 +278,23 @@ func TestMaintenanceCleanRestartPreservesEstablishedCoverageFloor(t *testing.T) 
 	require.True(t, after.Coverage.EnumerationComplete)
 	require.NotEqual(t, before.Coverage.Epoch, after.Coverage.Epoch)
 }
+
+func TestMaintenanceHistoryExhaustionIsExplicitAndBounded(t *testing.T) {
+	c := newReadStateTestContainer(t)
+	ctx := context.Background()
+	h, err := c.NewMaintenanceHistoryStorage(ctx)
+	require.NoError(t, err)
+	require.NoError(t, h.RegisterHistory(ctx, "exhausted", []byte("notification")))
+	for i := 0; i < 5; i++ {
+		require.NoError(t, h.HistoryAttempt(ctx, "exhausted"))
+		require.NoError(t, h.HistoryFailed(ctx, "exhausted", "history_download_failed"))
+	}
+	jobs, err := h.HistoryJobs(ctx)
+	require.NoError(t, err)
+	require.Empty(t, jobs)
+	now := time.Now().Unix()
+	page, err := h.Page(ctx, storage.MaintenanceQuery{From: now, To: now, Limit: 5})
+	require.NoError(t, err)
+	require.Contains(t, page.Coverage.Errors, "history_retries_exhausted")
+	require.False(t, page.Coverage.EnumerationComplete)
+}

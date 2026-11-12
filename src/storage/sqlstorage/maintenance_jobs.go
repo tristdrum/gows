@@ -43,7 +43,7 @@ func (h *SQLMaintenanceHistoryStore) HistoryJobs(ctx context.Context) ([]storage
 }
 func (h *SQLMaintenanceHistoryStore) HistoryAttempt(ctx context.Context, id string) error {
 	return h.change(ctx, func(tx *sqlx.Tx, s *maintenanceState) error {
-		_, err := tx.ExecContext(ctx, `UPDATE gows_maintenance_history_jobs SET attempts=attempts+1 WHERE id=$1`, id)
+		_, err := tx.ExecContext(ctx, `UPDATE gows_maintenance_history_jobs SET attempts=attempts+1,last_error='' WHERE id=$1`, id)
 		return err
 	})
 }

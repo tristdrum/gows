@@ -112,6 +112,13 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	}
 	if pending > 0 {
 		add("history_pending")
+		var exhausted int
+		if err = tx.GetContext(ctx, &exhausted, `SELECT COUNT(*) FROM gows_maintenance_history_jobs WHERE acked=FALSE AND attempts>=5 AND last_error<>''`); err != nil {
+			return nil, err
+		}
+		if exhausted > 0 {
+			add("history_retries_exhausted")
+		}
 		reasons := []string{}
 		if err = tx.SelectContext(ctx, &reasons, `SELECT DISTINCT last_error FROM gows_maintenance_history_jobs WHERE acked=FALSE AND last_error<>'' ORDER BY last_error`); err != nil {
 			return nil, err
