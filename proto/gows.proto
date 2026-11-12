@@ -186,6 +186,8 @@ service MessageService {
 
   rpc GetChats(GetChatsRequest) returns (JsonList);
   rpc GetChatIndex(GetChatIndexRequest) returns (Json);
+  // Private Min provider-observed maintenance window. Default history is unchanged.
+  rpc GetMaintenanceHistory(MaintenanceHistoryRequest) returns (Json);
 
   // Explicit Status storage is independent of normalized webhook ignore policy.
   rpc ConfigureStatusHistory(StatusHistoryConfigRequest) returns (Json);
@@ -874,4 +876,14 @@ message PollVoteMessage {
   string pollMessageId = 1;
   optional int64 pollServerId = 2;  // only for Channels
   repeated string options = 3;
+}
+
+message MaintenanceHistoryRequest {
+ Session session = 1;
+ int64 from_timestamp = 2;
+ int64 to_timestamp = 3;
+ int32 limit = 4;
+ string cursor = 5;
+ string chat_id = 6;
+ string token = 7;
 }

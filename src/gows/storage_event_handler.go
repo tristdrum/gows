@@ -1,6 +1,7 @@
 package gows
 
 import (
+	"context"
 	"errors"
 	"runtime/debug"
 	"time"
@@ -145,7 +146,7 @@ func (st *StorageEventHandler) handleEvent(event interface{}) {
 	}
 }
 
-func (st *StorageEventHandler) handleSaveMessage(event *events.Message, status *storage.Status) {
+func (st *StorageEventHandler) handleSaveMessage(event *events.Message, status *storage.Status) error {
 	messageToStore := &storage.StoredMessage{
 		Message: event,
 		Status:  status,
@@ -156,54 +157,35 @@ func (st *StorageEventHandler) handleSaveMessage(event *events.Message, status *
 	if err != nil {
 		st.log.Errorf("Error storing message %v(%v): %v", event.Info.Chat, event.Info.ID, err)
 	}
+	return err
 }
 
-func (st *StorageEventHandler) handleMessageEvent(event *events.Message) {
+func (st *StorageEventHandler) handleMessageEvent(event *events.Message) error {
 	if event.Message == nil {
-		return
+		return nil
 	}
 	protocolMessage := event.Message.GetProtocolMessage()
-
-	// Revoked message
-	// NOTE: ProtocolMessage_REVOKE is the zero value, always check the message itself first
-	isRevoked := protocolMessage != nil && protocolMessage.GetType() == waE2E.ProtocolMessage_REVOKE
-	if isRevoked {
+	if protocolMessage != nil && protocolMessage.GetType() == waE2E.ProtocolMessage_REVOKE {
 		id := protocolMessage.GetKey().GetID()
 		if id == "" {
-			st.log.Warnf("Revoke message %v without a message id, ignoring", event.Info.ID)
-			return
+			return errors.New("revoke has no target identity")
 		}
-		err := st.storage.Messages.DeleteMessage(id)
-		if err != nil {
-			st.log.Errorf("Error deleting message %v: %v", id, err)
-		}
-		return
-	}
-
-	// Chat ephemeral settings - changed
-	if protocolMessage != nil {
-		setting := ExtractEphemeralSettingsFromProtocolMessage(event.Info, protocolMessage)
-		if setting != nil {
-			err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
-			if err != nil {
-				st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
+		if st.gows != nil && st.gows.Maintenance != nil {
+			if err := st.gows.Maintenance.Revoke(st.gows.Context, id); err != nil {
+				return err
 			}
-			st.log.Debugf("Changed chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
-			return
+		}
+		return st.storage.Messages.DeleteMessage(id)
+	}
+	if protocolMessage != nil {
+		if setting := ExtractEphemeralSettingsFromProtocolMessage(event.Info, protocolMessage); setting != nil {
+			return st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
 		}
 	}
-
-	// Chat ephemeral settings - from message
-	setting := ExtractEphemeralSettingsFromMsg(event)
-	if setting != nil {
-		err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
-		if err != nil {
-			st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
-		}
-		st.log.Debugf("Initial chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
-		// Do not return - we still need to handle the message
-		// return
+	if setting := ExtractEphemeralSettingsFromMsg(event); setting != nil {
+		return st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
 	}
+	return nil
 }
 
 func (st *StorageEventHandler) handleReceipt(event *events.Receipt) {
@@ -242,23 +224,26 @@ func (st *StorageEventHandler) handleReceipt(event *events.Receipt) {
 	}
 }
 
-func (st *StorageEventHandler) handleHistorySync(event *events.HistorySync) {
-	conversations := event.Data.GetConversations()
-	for _, conv := range conversations {
+func (st *StorageEventHandler) handleHistorySync(event *events.HistorySync) error {
+	return st.handleHistorySyncContext(st.historyContext(), event)
+}
+
+func (st *StorageEventHandler) handleHistorySyncContext(ctx context.Context, event *events.HistorySync) error {
+	var result error
+	for _, conv := range event.Data.GetConversations() {
 		jid, err := types.ParseJID(conv.GetID())
 		if err != nil {
-			st.log.Errorf("Error parsing JID: %v", err)
-			continue
+			return err
 		}
-
-		// Skip this conversation if the JID should be ignored
 		if st.shouldIgnoreJID(jid) {
 			continue
 		}
-
-		go st.saveHistoryForOneChat(conv, jid)
+		result = errors.Join(result, st.saveHistoryForOneChatContext(ctx, conv, jid))
+		if ctx.Err() != nil {
+			return errors.Join(result, ctx.Err())
+		}
 	}
-	st.log.Debugf("Saved history for %v chats", len(conversations))
+	return result
 }
 
 func (st *StorageEventHandler) handleMarkChatAsRead(event *events.MarkChatAsRead) {
@@ -274,41 +259,46 @@ func (st *StorageEventHandler) handleMarkChatAsRead(event *events.MarkChatAsRead
 	}
 }
 
-func (st *StorageEventHandler) saveHistoryForOneChat(conv *waHistorySync.Conversation, chatJID types.JID) {
-	historyMessages := conv.GetMessages()
-	for _, historyMsg := range historyMessages {
-		message := historyMsg.GetMessage()
-		msg, err := st.gows.ParseWebMessage(chatJID, message)
-		if err != nil {
-			st.log.Errorf("Error parsing message: %v", err)
-			continue
-		}
+func (st *StorageEventHandler) saveHistoryForOneChat(conv *waHistorySync.Conversation, chatJID types.JID) error {
+	return st.saveHistoryForOneChatContext(st.historyContext(), conv, chatJID)
+}
 
+func (st *StorageEventHandler) saveHistoryForOneChatContext(ctx context.Context, conv *waHistorySync.Conversation, chatJID types.JID) error {
+	for _, historyMsg := range conv.GetMessages() {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		msg, err := st.gows.ParseWebMessage(chatJID, historyMsg.GetMessage())
+		if err != nil {
+			return err
+		}
 		var status storage.Status
 		if msg.SourceWebMsg != nil && msg.SourceWebMsg.Status != nil {
 			status = storage.Status(*msg.SourceWebMsg.Status)
 		}
-
-		st.handleSaveMessage(msg, &status)
-	}
-	st.log.Debugf("Saved %v messages in %v", len(conv.GetMessages()), chatJID)
-
-	setting := ExtractEphemeralSettingsFromConversation(conv, chatJID)
-	if setting != nil {
-		err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting)
-		if err != nil {
-			st.log.Errorf("Error updating chat ephemeral setting %v: %v", setting.ID, err)
+		if err = st.handleSaveMessage(msg, &status); err != nil {
+			return err
 		}
-		st.log.Debugf("Initial chat ephemeral setting %v (enabled: %v)", setting.ID, setting.IsEphemeral)
+		if err = st.observeMaintenanceMessage(msg); err != nil {
+			return err
+		}
+		if err = st.handleMessageEvent(msg); err != nil {
+			return err
+		}
 	}
-
+	if setting := ExtractEphemeralSettingsFromConversation(conv, chatJID); setting != nil {
+		if err := st.storage.ChatEphemeralSetting.UpdateChatEphemeralSetting(setting); err != nil {
+			return err
+		}
+	}
 	if st.storage.ChatReadState != nil {
-		if readState, ok := chatReadStateFromConversation(conv, chatJID); ok {
-			if _, err := st.storage.ChatReadState.UpsertChatReadState(readState); err != nil {
-				st.log.Errorf("Error storing history chat read state for %v: %v", chatJID, err)
+		if state, ok := chatReadStateFromConversation(conv, chatJID); ok {
+			if _, err := st.storage.ChatReadState.UpsertChatReadState(state); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
 }
 
 func (st *StorageEventHandler) handleMeJoinedGroup(group *events.JoinedGroup) {
@@ -438,13 +428,13 @@ func (st *StorageEventHandler) handleContact(contact *events.Contact) {
 	st.handleContactLidJidMapping(contact)
 }
 
-func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contact) {
+func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contact) error {
 	ctx := st.gows.Context
 	cli := st.gows.Client
 
 	// Save lid to jid mapping
 	if cli == nil || cli.Store == nil || cli.Store.LIDs == nil {
-		return
+		return nil
 	}
 
 	var err error
@@ -460,7 +450,7 @@ func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contac
 			lid, err = types.ParseJID(act.GetLidJID())
 			if err != nil {
 				st.log.Errorf("Failed to parse LID JID: %v", err)
-				return
+				return err
 			}
 		}
 
@@ -471,18 +461,29 @@ func (st *StorageEventHandler) handleContactLidJidMapping(contact *events.Contac
 			jid, err = types.ParseJID(act.GetPnJID())
 			if err != nil {
 				st.log.Errorf("Failed to parse PN JID: %v", err)
-				return
+				return err
 			}
 		}
 	}
 
 	// Save lid to jid mapping
 	if lid == types.EmptyJID || jid == types.EmptyJID {
-		return
+		return nil
 	}
 	err = cli.Store.LIDs.PutLIDMapping(ctx, lid, jid)
 	if err != nil {
 		st.log.Errorf("Failed to update LID mapping (%v => %v): %v", lid, jid, err)
-		return
+		return err
 	}
+	if st.gows.Maintenance != nil {
+		return st.gows.Maintenance.MapIdentity(ctx, lid.String(), jid.String())
+	}
+	return nil
+}
+
+func (st *StorageEventHandler) historyContext() context.Context {
+	if st.gows != nil && st.gows.Context != nil {
+		return st.gows.Context
+	}
+	return context.Background()
 }

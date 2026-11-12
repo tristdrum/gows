@@ -35,6 +35,8 @@ type GoWS struct {
 	chatReadStateBootstrap sync.Once
 	Voice                  *calling.Manager
 	statusHistoryStop      func()
+	Maintenance            *sqlstorage.SQLMaintenanceHistoryStore
+	maintenanceWorker      *maintenanceWorker
 }
 
 func (gows *GoWS) reissueEvent(event interface{}) {
@@ -85,7 +87,11 @@ func (gows *GoWS) reissueEvent(event interface{}) {
 
 func (gows *GoWS) handleEvent(event interface{}) {
 	receivedAtMS := time.Now().UnixMilli()
+	handledMaintenance := gows.handleMaintenanceEvent(event)
 	go gows.reissueEvent(event)
+	if handledMaintenance {
+		return
+	}
 	if gows.storageEventHandler.handleStatusHistoryEvent(event, receivedAtMS) {
 		return
 	}
@@ -140,6 +146,7 @@ func (gows *GoWS) Stop() {
 	}
 
 	gows.Disconnect()
+	gows.stopMaintenanceHistory()
 	if gows.statusHistoryStop != nil {
 		gows.statusHistoryStop()
 	}
@@ -191,22 +198,12 @@ func BuildSession(
 	client.AutomaticMessageRerequestFromPhone = true
 	client.EmitAppStateEventsOnFullSync = true
 	client.InitialAutoReconnect = true
+	client.ManualHistorySyncDownload = true
+	client.DisableManualHistorySyncReceipt = true
 
 	ctx, cancel := context.WithCancel(ctx)
-	gows := &GoWS{
-		client,
-		client.DangerousInternals(),
-		ctx,
-		nil,
-		make(chan interface{}, 10),
-		cancel,
-		container,
-		nil,
-		0,
-		sync.Once{},
-		nil,
-		nil,
-	}
+	gows := &GoWS{Client: client, int: client.DangerousInternals(), Context: ctx, events: make(chan interface{}, 10), cancelContext: cancel, container: container}
+
 	// Unrelated sessions retain their existing raw stanza handlers.
 	for _, name := range strings.Split(os.Getenv("GOWS_CALLING_SESSIONS"), ",") {
 		if name = strings.TrimSpace(name); name != "" && name == ctx.Value("name") {
@@ -227,16 +224,29 @@ func BuildSession(
 		storage:    gows.Storage,
 		ignoreJids: ignoreJids,
 	}
+	if err = gows.startMaintenanceHistory(dialect, address); err != nil {
+		cancel()
+		_ = container.Close()
+		return nil, err
+	}
+	if ignoreJids != nil && ignoreJids.Groups {
+		_ = gows.Maintenance.Fail(ctx, "chat_scope_filtered")
+	}
+	if !storageCfg.Messages {
+		_ = gows.Maintenance.Fail(ctx, "message_storage_disabled")
+	}
 	restoreCtx, restoreCancel := context.WithTimeout(ctx, 10*time.Second)
 	err = invalidateRestoredStatusHistory(restoreCtx, gows.Storage.StatusHistory, dialect, address)
 	restoreCancel()
 	if err != nil {
+		gows.stopMaintenanceHistory()
 		cancel()
 		_ = container.Close()
 		return nil, err
 	}
 	gows.statusHistoryStop, err = startStatusHistory(ctx, gows.Storage.StatusHistory)
 	if err != nil {
+		gows.stopMaintenanceHistory()
 		cancel()
 		_ = container.Close()
 		return nil, err
@@ -295,7 +305,7 @@ func (gows *GoWS) SendMessage(ctx context.Context, to types.JID, msg *waE2E.Mess
 		ServerID:  resp.ServerID,
 	}
 	evt := &events.Message{Info: *info, Message: msg, RawMessage: msg}
-	go gows.handleEvent(evt)
+	gows.handleEvent(evt)
 	return evt, nil
 }
 
