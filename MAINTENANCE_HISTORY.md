@@ -26,3 +26,10 @@ PostgreSQL boundary tests use a caller-created local `gows_*_test` database thro
 `GOWS_SEED_TIMING=1 go test ./storage/sqlstorage -run ^TestMaintenanceSeedTiming$ -count=1 -v`
 rehearsal creates/removes 28 synthetic SQLite databases with four parallel starters.
 Its local warm-cache timing is not Linux image or live readiness proof.
+
+Maintenance pages reconcile every LID in their time window against the durable
+provider mapping before chat filtering and token calculation. Cached callback
+hints cannot authorize a PN alias. Reassignment/removal invalidates affected
+window tokens, including a LID moving out of the selected chat; unresolved LIDs
+and unknown LID filters hold coverage. PostgreSQL uses one repeatable-read snapshot
+for mapping reconciliation and the page. No WhatsApp request is made.

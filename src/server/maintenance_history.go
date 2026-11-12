@@ -24,13 +24,6 @@ func (s *Server) GetMaintenanceHistory(ctx context.Context, req *__.MaintenanceH
 		if parseErr != nil || jid.User == "" || (jid.Server != types.DefaultUserServer && jid.Server != types.LegacyUserServer && jid.Server != types.HiddenUserServer && jid.Server != types.GroupServer) {
 			return nil, status.Error(codes.InvalidArgument, "maintenance_chat_invalid")
 		}
-		if jid.Server == types.HiddenUserServer {
-			pn, mappingErr := cli.Store.LIDs.GetPNForLID(ctx, jid)
-			if mappingErr != nil || pn.IsEmpty() || pn.Server != types.DefaultUserServer {
-				return nil, status.Error(codes.FailedPrecondition, "maintenance_identity_unknown")
-			}
-			chatID = pn.ToNonAD().String()
-		}
 	}
 	page, err := cli.Maintenance.Page(ctx, storage.MaintenanceQuery{From: req.GetFromTimestamp(), To: req.GetToTimestamp(), Limit: int(req.GetLimit()), Cursor: req.GetCursor(), ChatID: chatID, Token: req.GetToken()})
 	if err != nil {

@@ -41,11 +41,19 @@ func (h *SQLMaintenanceHistoryStore) Observe(ctx context.Context, msg *storage.S
 	}
 	return h.change(ctx, func(tx *sqlx.Tx, s *maintenanceState) error {
 		jid := canonical
+		known := canonical != ""
+		if strings.HasSuffix(msg.Info.Chat.String(), "@lid") {
+			var err error
+			jid, known, err = maintenanceCurrentIdentity(ctx, tx, msg.Info.Chat.String())
+			if err != nil {
+				return err
+			}
+		}
 		if jid == "" {
 			jid = msg.Info.Chat.String()
 		}
 		_, err := tx.ExecContext(ctx, `INSERT INTO gows_maintenance_activity(id,provider_jid,jid,timestamp,from_me,identity_known,revision) VALUES($1,$2,$3,$4,$5,$6,(SELECT revision FROM gows_maintenance_state WHERE id=1))
-   ON CONFLICT(id) DO UPDATE SET jid=excluded.jid,identity_known=excluded.identity_known,revision=excluded.revision`, msg.Info.ID, msg.Info.Chat.String(), jid, msg.Info.Timestamp.Unix(), msg.Info.IsFromMe, canonical != "")
+   ON CONFLICT(id) DO UPDATE SET jid=excluded.jid,identity_known=excluded.identity_known,revision=excluded.revision`, msg.Info.ID, msg.Info.Chat.String(), jid, msg.Info.Timestamp.Unix(), msg.Info.IsFromMe, known)
 		return err
 	})
 }
@@ -60,7 +68,11 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	q.ChatID = strings.Replace(q.ChatID, "@c.us", "@s.whatsapp.net", 1)
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	tx, err := h.db.BeginTxx(ctx, nil)
+	var options *sql.TxOptions
+	if h.db.DriverName() == "postgres" {
+		options = &sql.TxOptions{Isolation: sql.LevelRepeatableRead}
+	}
+	tx, err := h.db.BeginTxx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +80,17 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	// Same lock as registration and all ordinary message mutation triggers.
 	if _, err = tx.ExecContext(ctx, `UPDATE gows_maintenance_state SET revision=revision WHERE id=1`); err != nil {
 		return nil, err
+	}
+	if err = reconcileMaintenanceIdentities(ctx, tx, q.From, q.To); err != nil {
+		return nil, err
+	}
+	requestedChat := q.ChatID
+	filterIdentityKnown := true
+	if strings.HasSuffix(q.ChatID, "@lid") {
+		q.ChatID, filterIdentityKnown, err = maintenanceCurrentIdentity(ctx, tx, q.ChatID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var row struct {
 		Data      string `db:"data"`
@@ -85,10 +108,10 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	p.Window.From = q.From
 	p.Window.To = q.To
 	var windowRevision int64
-	if err = tx.GetContext(ctx, &windowRevision, `SELECT COALESCE(MAX(revision),0) FROM gows_maintenance_activity WHERE `+maintenanceChatSQL("provider_jid")+` AND `+maintenanceChatSQL("jid")+` AND timestamp>=$1 AND timestamp<=$2 AND ($3='' OR jid=$3 OR identity_known=FALSE)`, q.From, q.To, q.ChatID); err != nil {
+	if err = tx.GetContext(ctx, &windowRevision, `SELECT COALESCE(MAX(revision),0) FROM gows_maintenance_activity WHERE `+maintenanceChatSQL("provider_jid")+` AND `+maintenanceChatSQL("jid")+` AND timestamp>=$1 AND timestamp<=$2 AND ($3='' OR jid=$3 OR identity_known=FALSE OR provider_jid LIKE '_%@lid')`, q.From, q.To, q.ChatID); err != nil {
 		return nil, err
 	}
-	tokenData, _ := json.Marshal([]any{s.Epoch, windowRevision, s.Since, s.Fault, row.Untracked, q.From, q.To, q.ChatID})
+	tokenData, _ := json.Marshal([]any{s.Epoch, windowRevision, s.Since, s.Fault, row.Untracked, q.From, q.To, requestedChat, q.ChatID})
 	digest := sha256.Sum256(tokenData)
 	p.Coverage = storage.MaintenanceCoverage{Complete: true, EnumerationComplete: true, Epoch: s.Epoch, Revision: windowRevision, Token: hex.EncodeToString(digest[:]), Scope: "provider_observed", Errors: []string{}}
 	add := func(reason string) {
@@ -97,6 +120,9 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 			p.Coverage.EnumerationComplete = false
 		}
 		p.Coverage.Errors = append(p.Coverage.Errors, reason)
+	}
+	if !filterIdentityKnown {
+		add("identity_unknown")
 	}
 	if row.Untracked {
 		add("untracked_mutation")
@@ -144,7 +170,7 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	if err = tx.GetContext(ctx, &unknown, `SELECT COUNT(*) FROM gows_maintenance_activity WHERE `+maintenanceChatSQL("provider_jid")+` AND `+maintenanceChatSQL("jid")+` AND timestamp>=$1 AND timestamp<=$2 AND identity_known=FALSE`, q.From, q.To); err != nil {
 		return nil, err
 	}
-	if unknown > 0 {
+	if unknown > 0 && filterIdentityKnown {
 		add("identity_unknown")
 	}
 	var cursor maintenanceCursor
@@ -156,7 +182,7 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 	}
 	if q.Token != "" && q.Token != p.Coverage.Token || q.Cursor != "" && cursor.Token != p.Coverage.Token {
 		add("revision_changed")
-		return p, nil
+		return commitMaintenancePage(tx, p)
 	}
 	rows, err := tx.QueryxContext(ctx, `SELECT a.id,a.jid,a.provider_jid,a.timestamp,a.from_me,m.data
   FROM gows_maintenance_activity a LEFT JOIN gows_messages m ON m.id=a.id AND m.is_real=TRUE AND a.deleted=FALSE
@@ -204,7 +230,7 @@ func (h *SQLMaintenanceHistoryStore) Page(ctx context.Context, q storage.Mainten
 		raw, _ := json.Marshal(maintenanceCursor{Token: p.Coverage.Token, Timestamp: last.Timestamp, JID: last.JID, ID: last.ID})
 		p.NextCursor = base64.RawURLEncoding.EncodeToString(raw)
 	}
-	return p, nil
+	return commitMaintenancePage(tx, p)
 }
 
 // Retain existing stored notes for candidate recovery on first installation.
@@ -244,7 +270,18 @@ func (h *SQLMaintenanceHistoryStore) MapIdentity(ctx context.Context, lid, pn st
 		return errors.New("invalid maintenance identity mapping")
 	}
 	return h.change(ctx, func(tx *sqlx.Tx, s *maintenanceState) error {
-		_, err := tx.ExecContext(ctx, `UPDATE gows_maintenance_activity SET jid=$1,identity_known=TRUE,revision=(SELECT revision FROM gows_maintenance_state WHERE id=1) WHERE provider_jid=$2`, pn, lid)
+		current, known, err := maintenanceCurrentIdentity(ctx, tx, lid)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE gows_maintenance_activity SET jid=$1,identity_known=$2,revision=(SELECT revision FROM gows_maintenance_state WHERE id=1) WHERE provider_jid=$3 AND (jid<>$1 OR identity_known<>$2)`, current, known, lid)
 		return err
 	})
+}
+
+func commitMaintenancePage(tx *sqlx.Tx, page *storage.MaintenancePage) (*storage.MaintenancePage, error) {
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return page, nil
 }
