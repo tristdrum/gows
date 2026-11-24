@@ -39,7 +39,7 @@ func (s *Server) UpsertLabel(ctx context.Context, req *__.UpsertLabelRequest) (*
 
 	// Send app state update for label edit
 	label := req.Label
-	patch := appstate.BuildLabelEdit(label.Id, label.Name, label.Color, false)
+	patch := appstate.BuildLabelEdit(label.Id, label.Name, label.Color, false, nil, nil)
 	err = cli.SendAppState(ctx, patch)
 	if err != nil {
 		return nil, fmt.Errorf("error upserting label: %w", err)
@@ -56,7 +56,7 @@ func (s *Server) DeleteLabel(ctx context.Context, req *__.DeleteLabelRequest) (*
 
 	// Send app state update for label delete
 	label := req.Label
-	patch := appstate.BuildLabelEdit(label.Id, label.Name, label.Color, true)
+	patch := appstate.BuildLabelEdit(label.Id, label.Name, label.Color, true, nil, nil)
 	err = cli.SendAppState(ctx, patch)
 	if err != nil {
 		return nil, fmt.Errorf("error deleting label: %w", err)

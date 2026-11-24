@@ -46,9 +46,10 @@ func TestStatusMediaFrameAttemptsAcknowledgement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.handleFrame(context.Background(), frame)
+	queue := make(chan *waBinary.Node, 1)
+	client.handleFrame(context.Background(), frame, queue)
 	select {
-	case parsed := <-client.handlerQueue:
+	case parsed := <-queue:
 		if parsed.Tag != "status" || parsed.Attrs["type"] != "media" || parsed.Attrs["id"] != node.Attrs["id"] {
 			t.Fatalf("status identity changed: %v", parsed)
 		}
